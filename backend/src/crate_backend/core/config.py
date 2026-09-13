@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Crate API"
     environment: str = "development"
+    database_url: str = "postgresql+asyncpg://crate:crate_dev_password@localhost:5432/crate"
 
 
 @lru_cache
