@@ -1,21 +1,21 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTableUUID
+from sqlalchemy.orm import Mapped, relationship
 
 from crate_backend.db.base import Base
-from crate_backend.models.mixins import TimestampMixin, UUIDPkMixin
+from crate_backend.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from crate_backend.models.rating import Descriptor, Rating
     from crate_backend.models.workspace import Workspace
 
 
-class User(UUIDPkMixin, TimestampMixin, Base):
-    __tablename__ = "users"
+class User(SQLAlchemyBaseUserTableUUID, TimestampMixin, Base):
+    """id, email, hashed_password, is_active, is_superuser, is_verified come
+    from fastapi-users' base table mixin."""
 
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
-    hashed_password: Mapped[str] = mapped_column(String(255))
+    __tablename__ = "users"
 
     workspaces: Mapped[list["Workspace"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
