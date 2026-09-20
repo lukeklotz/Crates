@@ -15,7 +15,6 @@ import {
   MoveUpRight,
   Layers,
   X,
-  Upload,
   SquareDashed,
   ArrowRight,
 } from 'lucide-react';
@@ -40,6 +39,13 @@ type Item = {
   group?: string;
 };
 type Group = { id: string; name: string; popularity: string };
+type SearchResult = {
+  id: string;
+  title: string;
+  artist_name: string | null;
+  release_year: number | null;
+  cover_art_url: string | null;
+};
 const uid = () => crypto.randomUUID();
 export default function Home() {
   const [items, setItems] = useState<Item[]>([]),
@@ -52,16 +58,14 @@ export default function Home() {
   const [panel, setPanel] = useState<'search' | 'group' | null>(null),
     [activeGroup, setActiveGroup] = useState<string | null>(null),
     [query, setQuery] = useState(''),
-    [results, setResults] = useState<any[]>([]),
+    [results, setResults] = useState<SearchResult[]>([]),
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(''),
-    [dragging, setDragging] = useState(false),
-    [dragOver, setDragOver] = useState(false);
+    [dragging, setDragging] = useState(false);
   const [history, setHistory] = useState<{ items: Item[]; groups: Group[] }[]>(
     [],
   );
-  const file = useRef<HTMLInputElement>(null),
-    board = useRef<HTMLDivElement>(null),
+  const board = useRef<HTMLDivElement>(null),
     searchVersion = useRef(0);
   const gesture = useRef<{
     id: string;
@@ -109,42 +113,6 @@ export default function Home() {
     setSelected([id]);
     setNotice(`${title} added.`);
   }
-  async function upload(files: FileList | null) {
-    if (!files) return;
-    const valid = Array.from(files).filter(
-      (f) =>
-        /^image\/(png|jpeg|webp|gif|avif)$/.test(f.type) &&
-        f.size <= 15 * 1024 * 1024,
-    );
-    if (!valid.length) {
-      setNotice('Choose PNG, JPG, WebP, GIF, or AVIF images under 15 MB.');
-      return;
-    }
-    checkpoint();
-    const additions = await Promise.all(
-      valid.map(
-        (f, i) =>
-          new Promise<Item>((resolve) => {
-            const src = URL.createObjectURL(f);
-            resolve({
-              id: uid(),
-              title: f.name,
-              artist: 'LOCAL IMAGE',
-              src,
-              x: 80 + ((items.length + i) % 4) * 220,
-              y: 100 + Math.floor((items.length + i) / 4) * 250,
-              size: 176,
-              rotation: 0,
-            });
-          }),
-      ),
-    );
-    setItems((a) => [...a, ...additions]);
-    setSelected(additions.map((a) => a.id));
-    setNotice(
-      `${additions.length} image${additions.length === 1 ? '' : 's'} added. Images stay in this session.`,
-    );
-  }
   function remove(id: string) {
     checkpoint();
     setItems((a) => a.filter((i) => i.id !== id));
@@ -188,14 +156,14 @@ export default function Home() {
         `/api/search?q=${encodeURIComponent(query.trim())}`,
       );
       if (!response.ok) throw new Error();
-      const data = (await response.json()) as { results: any[] };
+      const data = (await response.json()) as { results: SearchResult[] };
       if (version === searchVersion.current) {
         setResults(data.results);
         if (!data.results.length)
           setNotice('No albums found. Try another artist or album.');
       }
     } catch {
-      setNotice('Album search is unavailable. Try again or add a cover image.');
+      setNotice('Album search is unavailable. Try again in a moment.');
     } finally {
       if (version === searchVersion.current) setLoading(false);
     }
@@ -323,27 +291,10 @@ export default function Home() {
           <h1>UNTITLED SANDBOX</h1>
           <span className="session-dot" title="Session workspace" />
         </div>
-        <button className="search-button" onClick={() => setPanel('search')}>
+        <button className="primary search-button" onClick={() => setPanel('search')}>
           <Search size={17} />
           <span>SEARCH ALBUMS</span>
         </button>
-        <button
-          className="primary add-button"
-          onClick={() => file.current?.click()}
-        >
-          <Plus size={18} /> ADD IMAGE
-        </button>
-        <input
-          ref={file}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
-          multiple
-          hidden
-          onChange={(e) => {
-            void upload(e.target.files);
-            e.target.value = '';
-          }}
-        />
       </header>
       <section className="board-shell" aria-label="Album sandbox">
         <div className="ruler top-ruler" aria-hidden="true">
@@ -389,17 +340,7 @@ export default function Home() {
         </div>
         <div
           ref={board}
-          className={`board ${mode === 'pan' ? 'pan' : ''} ${dragOver ? 'drop-active' : ''}`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            void upload(e.dataTransfer.files);
-          }}
+          className={`board ${mode === 'pan' ? 'pan' : ''}`}
           onPointerDown={(e) => {
             if (mode === 'pan') {
               const el = e.currentTarget,
@@ -628,16 +569,13 @@ export default function Home() {
               AN ALBUM.
             </h2>
             <p>
-              Search for a record or drop an image here.
+              Search for a record.
               <br />
               Arrange a few. Find your next direction.
             </p>
             <button onClick={() => setPanel('search')}>
               SEARCH ALBUMS <ArrowUpRight size={18} />
             </button>
-            <span className="file-hint">
-              JPG, PNG, WEBP, GIF, AVIF / UP TO 15 MB
-            </span>
           </div>
         )}
         {selected.length > 0 && (
@@ -782,17 +720,22 @@ export default function Home() {
                   {results.map((r) => (
                     <button
                       className="search-result"
-                      key={r.collectionId}
+                      key={r.id}
                       onClick={() => {
-                        add(r.collectionName, r.artistName, r.artworkUrl100);
+                        add(
+                          r.title,
+                          r.artist_name ?? 'Unknown artist',
+                          r.cover_art_url ?? '/album-placeholder.svg',
+                        );
                         setPanel(null);
                       }}
                     >
-                      <img src={r.artworkUrl100} alt="" />
+                      <img src={r.cover_art_url ?? '/album-placeholder.svg'} alt="" />
                       <span>
-                        <strong>{r.collectionName}</strong>
+                        <strong>{r.title}</strong>
                         <small>
-                          {r.artistName} / {r.releaseDate?.slice(0, 4)}
+                          {r.artist_name ?? 'Unknown artist'}
+                          {r.release_year ? ` / ${r.release_year}` : ''}
                         </small>
                       </span>
                       <Plus size={18} />
@@ -806,16 +749,6 @@ export default function Home() {
                   <span>Try an album title or artist name.</span>
                 </div>
               )}
-              <button
-                className="upload-alternative"
-                onClick={() => {
-                  setPanel(null);
-                  file.current?.click();
-                }}
-              >
-                <Upload size={16} /> ADD YOUR OWN IMAGE{' '}
-                <ArrowUpRight size={16} />
-              </button>
             </>
           ) : (
             group && (

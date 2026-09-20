@@ -155,11 +155,6 @@ button:hover:not(:disabled) {
   letter-spacing: 0.05em;
   color: #171717;
 }
-.add-button {
-  height: 42px;
-  padding: 0 18px;
-  font-size: 13px;
-}
 .board-shell {
   position: relative;
   flex: 1;
@@ -356,14 +351,6 @@ button:hover:not(:disabled) {
   letter-spacing: 0.05em;
   gap: 20px;
 }
-.file-hint {
-  display: block;
-  margin-top: 18px;
-  font-family: var(--font-label), monospace;
-  font-size: 10px;
-  color: #6c756d;
-  letter-spacing: 0.03em;
-}
 .canvas-footnote {
   position: absolute;
   bottom: 23px;
@@ -557,10 +544,6 @@ button:hover:not(:disabled) {
 .pan {
   cursor: grab;
 }
-.drop-active {
-  outline: 3px solid var(--coral);
-  outline-offset: -4px;
-}
 .group-frame {
   position: absolute;
   border: 1px dashed #24439488;
@@ -719,14 +702,6 @@ button:hover:not(:disabled) {
 .search-empty span {
   font-size: 13px;
   opacity: 0.7;
-}
-.upload-alternative {
-  margin-top: auto;
-  border-top: 1px solid #24439433;
-  padding-top: 20px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--blue);
 }
 .field-label {
   font-family: var(--font-label), monospace;
@@ -898,11 +873,6 @@ button:hover:not(:disabled) {
     font-family: var(--font-label), monospace;
     font-size: 10px;
   }
-  .add-button {
-    font-size: 10px;
-    padding: 0 10px;
-    height: 35px;
-  }
   .search-button {
     margin-left: auto;
   }
@@ -938,9 +908,6 @@ button:hover:not(:disabled) {
   }
   .empty-state > p:not(.eyebrow) {
     font-size: 12px;
-  }
-  .file-hint {
-    font-size: 8px;
   }
   .statusbar {
     min-height: 90px;
