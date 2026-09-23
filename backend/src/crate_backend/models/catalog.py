@@ -23,7 +23,9 @@ class Genre(UUIDPkMixin, TimestampMixin, Base):
     __tablename__ = "genres"
 
     musicbrainz_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True)
+    # Not unique: identity is the MBID, and MusicBrainz can hand a renamed
+    # genre's old name to a different genre between snapshots.
+    name: Mapped[str] = mapped_column(String(255))
 
 
 class Tag(UUIDPkMixin, TimestampMixin, Base):

@@ -1,7 +1,7 @@
 """Idempotent upserts of parsed MusicBrainz data into Crate's catalog
 tables. Rows are matched by MusicBrainz ID, so re-runs update in place."""
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from crate_backend.models.artist_relationship import ArtistRelationship
@@ -20,7 +20,8 @@ def _clip(value: str, max_length: int) -> str:
 
 def _release_year(first_release_date: str | None) -> int | None:
     year = (first_release_date or "")[:4]
-    return int(year) if len(year) == 4 and year.isdigit() else None
+    # isascii() too: str.isdigit() accepts characters like "¹" that int() rejects.
+    return int(year) if len(year) == 4 and year.isascii() and year.isdigit() else None
 
 
 async def _get_or_create_artist(session: AsyncSession, musicbrainz_id: str, name: str) -> Artist:
@@ -29,6 +30,8 @@ async def _get_or_create_artist(session: AsyncSession, musicbrainz_id: str, name
         artist = Artist(musicbrainz_id=musicbrainz_id, name=_clip(name, _NAME_MAX))
         session.add(artist)
         await session.flush()
+    elif name:
+        artist.name = _clip(name, _NAME_MAX)
     return artist
 
 
@@ -38,6 +41,8 @@ async def _get_or_create_genre(session: AsyncSession, musicbrainz_id: str, name:
         genre = Genre(musicbrainz_id=musicbrainz_id, name=_clip(name, _NAME_MAX))
         session.add(genre)
         await session.flush()
+    else:
+        genre.name = _clip(name, _NAME_MAX)
     return genre
 
 
@@ -53,12 +58,15 @@ async def _get_or_create_tag(session: AsyncSession, name: str) -> Tag:
 
 async def upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Album:
     primary_credit = candidate.artist_credit[0] if candidate.artist_credit else {}
-    credit_name = primary_credit.get("name")
+    credit_name = "".join(
+        (credit.get("name") or "") + (credit.get("joinphrase") or "")
+        for credit in candidate.artist_credit
+    )
     credited = primary_credit.get("artist") or {}
     primary_artist = None
     if credited.get("id"):
         primary_artist = await _get_or_create_artist(
-            session, credited["id"], credited.get("name") or credit_name or ""
+            session, credited["id"], credited.get("name") or primary_credit.get("name") or ""
         )
 
     album = await session.scalar(
@@ -73,8 +81,10 @@ async def upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Albu
     album.release_year = _release_year(candidate.first_release_date)
     await session.flush()
 
+    kept_genre_ids = []
     for genre in candidate.genres:
         genre_row = await _get_or_create_genre(session, genre["id"], genre["name"])
+        kept_genre_ids.append(genre_row.id)
         link = await session.scalar(
             select(AlbumGenre).where(
                 AlbumGenre.album_id == album.id, AlbumGenre.genre_id == genre_row.id
@@ -85,8 +95,10 @@ async def upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Albu
             session.add(link)
         link.count = genre.get("count", 0)
 
+    kept_tag_ids = []
     for tag in candidate.tags:
         tag_row = await _get_or_create_tag(session, tag["name"])
+        kept_tag_ids.append(tag_row.id)
         link = await session.scalar(
             select(AlbumTag).where(AlbumTag.album_id == album.id, AlbumTag.tag_id == tag_row.id)
         )
@@ -95,6 +107,15 @@ async def upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Albu
             session.add(link)
         link.count = tag.get("count", 0)
 
+    # Drop links MusicBrainz no longer lists, so re-runs don't keep ghosts.
+    await session.execute(
+        delete(AlbumGenre).where(
+            AlbumGenre.album_id == album.id, AlbumGenre.genre_id.not_in(kept_genre_ids)
+        )
+    )
+    await session.execute(
+        delete(AlbumTag).where(AlbumTag.album_id == album.id, AlbumTag.tag_id.not_in(kept_tag_ids))
+    )
     await session.flush()
     return album
 
