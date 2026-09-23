@@ -186,6 +186,8 @@ Create a reproducible source of canonical album and artist data.
 
 Crate has a normalized, searchable music catalog with stable identifiers and a repeatable ingestion process.
 
+**Status:** Complete as of 2026-09-23 — 25,000 albums ingested from the 2026-09-23 MusicBrainz snapshot (replication sequence 189205), replacing the 141-album seed catalog. Per-album credits, labels, and tracklists are deferred because the `release` dump is out of scope; see `docs/superpowers/specs/2026-09-20-musicbrainz-ingestion-design.md`.
+
 ---
 
 ## Phase 3 — Build non-ML recommendation baselines
