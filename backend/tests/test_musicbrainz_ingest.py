@@ -14,16 +14,16 @@ pytestmark = pytest.mark.asyncio
 
 
 def _candidate(**overrides) -> CandidateAlbum:
-    fields = dict(
-        musicbrainz_id="test-rg-1",
-        title="Test Album",
-        first_release_date="1959-08-17",
-        artist_credit=[
+    fields = {
+        "musicbrainz_id": "test-rg-1",
+        "title": "Test Album",
+        "first_release_date": "1959-08-17",
+        "artist_credit": [
             {"name": "Test Artist", "artist": {"id": "test-artist-1", "name": "Test Artist"}}
         ],
-        genres=[{"id": "test-genre-1", "name": "test-jazz", "count": 5}],
-        tags=[{"name": "test-modal", "count": 2}],
-    )
+        "genres": [{"id": "test-genre-1", "name": "test-jazz", "count": 5}],
+        "tags": [{"name": "test-modal", "count": 2}],
+    }
     fields.update(overrides)
     return CandidateAlbum(**fields)
 
