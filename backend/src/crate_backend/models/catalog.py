@@ -17,6 +17,23 @@ class Artist(UUIDPkMixin, TimestampMixin, Base):
     albums: Mapped[list["Album"]] = relationship(back_populates="primary_artist")
 
 
+class Genre(UUIDPkMixin, TimestampMixin, Base):
+    """MusicBrainz's curated genre vocabulary, kept separate from freeform Tag."""
+
+    __tablename__ = "genres"
+
+    musicbrainz_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class Tag(UUIDPkMixin, TimestampMixin, Base):
+    """Volunteer-voted MusicBrainz folksonomy tag. Unlike Genre, has no MBID."""
+
+    __tablename__ = "tags"
+
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+
+
 class Album(UUIDPkMixin, TimestampMixin, Base):
     __tablename__ = "albums"
 
@@ -44,5 +61,38 @@ class Album(UUIDPkMixin, TimestampMixin, Base):
     popularity: Mapped[float | None] = mapped_column(nullable=True)
 
     primary_artist: Mapped["Artist | None"] = relationship(back_populates="albums")
+    genres: Mapped[list["AlbumGenre"]] = relationship(
+        back_populates="album", cascade="all, delete-orphan"
+    )
+    tags: Mapped[list["AlbumTag"]] = relationship(
+        back_populates="album", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (UniqueConstraint("external_source", "external_id"),)
+
+
+class AlbumGenre(UUIDPkMixin, TimestampMixin, Base):
+    __tablename__ = "album_genres"
+
+    album_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("albums.id"), index=True)
+    genre_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("genres.id"), index=True)
+    # MusicBrainz's vote count for this genre on this release group.
+    count: Mapped[int] = mapped_column(default=0)
+
+    album: Mapped["Album"] = relationship(back_populates="genres")
+    genre: Mapped["Genre"] = relationship()
+
+    __table_args__ = (UniqueConstraint("album_id", "genre_id"),)
+
+
+class AlbumTag(UUIDPkMixin, TimestampMixin, Base):
+    __tablename__ = "album_tags"
+
+    album_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("albums.id"), index=True)
+    tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tags.id"), index=True)
+    count: Mapped[int] = mapped_column(default=0)
+
+    album: Mapped["Album"] = relationship(back_populates="tags")
+    tag: Mapped["Tag"] = relationship()
+
+    __table_args__ = (UniqueConstraint("album_id", "tag_id"),)
