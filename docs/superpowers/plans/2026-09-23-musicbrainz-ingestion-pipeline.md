@@ -1,0 +1,1841 @@
+# MusicBrainz Ingestion Pipeline Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace Crate's 141-album hand-written seed catalog with a MusicBrainz-derived catalog (genres, tags, artist identity, artist-to-artist relationships, cover art), implementing Phase 2 of `docs/crate-ml-engineering-project-plan.md`.
+
+**Architecture:** A two-stage streaming pipeline reads `release-group.tar.xz` (filter + rank to a target-sized candidate set) and `artist.tar.xz` (resolve an artist-to-artist relationship graph for credited artists), writes both into new Genre/Tag/ArtistRelationship tables via idempotent upserts, then a separate, resumable, rate-limited pass checks the Cover Art Archive. A thin CLI script orchestrates the stages, mirroring the existing `scripts/seed_catalog.py` pattern.
+
+**Tech Stack:** Python 3.12, SQLAlchemy 2.0 (async, typed `Mapped[...]` style), asyncpg, Alembic, httpx, pytest/pytest-asyncio against the real local Postgres (via the existing `db_session` fixture).
+
+**Spec:** `docs/superpowers/specs/2026-09-20-musicbrainz-ingestion-design.md`
+
+## Global Constraints
+
+- Python >=3.12; SQLAlchemy 2.0 typed ORM style (`Mapped[...]`, `mapped_column`), matching every existing model file.
+- New tables use `UUIDPkMixin` + `TimestampMixin` (`backend/src/crate_backend/models/mixins.py`) and a synthetic UUID primary key even for join tables, plus a `UniqueConstraint` for logical uniqueness — matching `GroupAlbumMembership` in `models/group.py`.
+- All DB access is async (`AsyncSession`, `asyncpg`), matching `db/session.py`.
+- No `release.tar.xz` usage anywhere; no per-album Credit table and no Label table (spec "Resolved decisions" items 3 and 7).
+- Artist-to-artist relationship allowlist is exactly `{"member of band", "collaboration"}` (spec item 1).
+- Target catalog size default is 25,000 albums (spec: "roughly 10,000–25,000 albums").
+- Cover Art Archive pacing: 1 request/second, exponential backoff from 1s doubling to a 60s cap, up to 5 retries (spec items 5–6).
+- Migrations are produced with `alembic revision --autogenerate`, never hand-written from a blank template.
+- **Tests run against the shared dev database** (`backend/tests/conftest.py` connects to `get_settings().database_url` and relies on Alembic having migrated it — it never calls `create_all`). Every test must therefore (a) use obviously-fake identifiers (`test-...`) that can't collide with real MusicBrainz MBIDs or genre/tag names, and (b) scope every assertion query to its own rows — never count a whole table — because after Task 8 that database holds ~25,000 real albums.
+- Command convention: `uv`/`pytest`/`alembic` commands run as `cd backend && ...`; `git` commands run from the repo root with `backend/`-prefixed paths.
+- A release-group with an invalid `first-release-date`, an overlong name, or a disallowed relationship type must degrade gracefully (store `null`/clip/skip), never raise and abort the whole run.
+
+## Review Focus
+
+- A credited artist MBID absent from the artist dump (the data-quality review found 1,507 of these on a mismatched snapshot; the aligned snapshot has 0, but that isn't guaranteed on future pulls) — the album must still import, linked to an `Artist` row built from the credit's own embedded name/MBID, just with no relationships.
+- `first-release-date` is missing, year-only (`"1994"`), or malformed — `release_year` must be `null` for malformed input rather than a garbage int or a raised exception.
+- Re-running ingestion on the same candidates must not duplicate `Album`, `Artist`, `Genre`, `Tag`, or `ArtistRelationship` rows — including the same band↔member edge seen once from the band's record (`backward`) and once from the member's (`forward`).
+- A name or title longer than its column (MusicBrainz has no length cap) must be clipped, not abort the single-transaction ingest of ~25,000 rows.
+- Cover Art Archive `429`/`5xx` or a network error must retry with backoff; `404` or any other status must record `null` without raising; progress must survive an interruption of the multi-hour cover art pass.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `backend/src/crate_backend/core/config.py` | *Modify* — add `musicbrainz_dump_dir`, `musicbrainz_target_catalog_size` |
+| `backend/pyproject.toml`, `backend/uv.lock` | *Modify* — move `httpx` from the dev group to main dependencies |
+| `backend/src/crate_backend/models/catalog.py` | *Modify* — add `Genre`, `Tag`, `AlbumGenre`, `AlbumTag`; `Album.genres`/`Album.tags` |
+| `backend/src/crate_backend/models/artist_relationship.py` | *Create* — `ArtistRelationship` graph-edge model |
+| `backend/src/crate_backend/models/__init__.py` | *Modify* — export the new models |
+| `backend/migrations/versions/<autogenerated>.py` | *Create* (via Alembic) |
+| `backend/src/crate_backend/musicbrainz/__init__.py` | *Create* — empty package marker |
+| `backend/src/crate_backend/musicbrainz/dump_reader.py` | *Create* — streaming JSON-lines-from-`.tar.xz` reader + dump metadata reader |
+| `backend/src/crate_backend/musicbrainz/extract.py` | *Create* — pure filter/rank/resolve logic (no I/O) |
+| `backend/src/crate_backend/musicbrainz/ingest.py` | *Create* — idempotent DB upserts |
+| `backend/src/crate_backend/musicbrainz/cover_art.py` | *Create* — rate-limited Cover Art Archive client |
+| `backend/src/crate_backend/scripts/ingest_musicbrainz.py` | *Create* — CLI entrypoint |
+| `backend/tests/test_models.py` | *Modify* |
+| `backend/tests/test_dump_reader.py`, `test_extract.py`, `test_musicbrainz_ingest.py`, `test_cover_art.py`, `test_ingest_musicbrainz_script.py` | *Create* |
+
+---
+
+### Task 1: Settings and runtime dependency
+
+**Files:**
+- Modify: `backend/src/crate_backend/core/config.py`
+- Modify: `backend/pyproject.toml`, `backend/uv.lock`
+
+**Interfaces:**
+- Produces: `Settings.musicbrainz_dump_dir: str`, `Settings.musicbrainz_target_catalog_size: int` — consumed by `scripts/ingest_musicbrainz.py` (Task 7). Env var overrides: `CRATE_MUSICBRAINZ_DUMP_DIR`, `CRATE_MUSICBRAINZ_TARGET_CATALOG_SIZE`.
+
+- [ ] **Step 1: Add the settings**
+
+Replace `backend/src/crate_backend/core/config.py` with:
+
+```python
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/src/crate_backend/core/config.py -> repo root is four parents up.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="CRATE_", env_file=".env")
+
+    app_name: str = "Crate API"
+    environment: str = "development"
+    database_url: str = "postgresql+asyncpg://crate:crate_dev_password@localhost:5432/crate"
+
+    # Signs auth JWTs and password-reset/verification tokens. Override with a
+    # long random value outside development.
+    auth_secret: str = "insecure-dev-secret-change-me-before-deploying-anywhere"
+    access_token_lifetime_seconds: int = 3600
+    cookie_secure: bool = False
+
+    # Origins allowed to send credentialed (cookie-based) requests, e.g. the
+    # frontend's dev server.
+    allowed_origins: list[str] = ["http://localhost:3000"]
+
+    # MusicBrainz ingestion pipeline (Phase 2).
+    musicbrainz_dump_dir: str = str(_REPO_ROOT / "MusicBrainz")
+    musicbrainz_target_catalog_size: int = 25000
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+```
+
+- [ ] **Step 2: Verify**
+
+Run: `cd backend && uv run python -c "from crate_backend.core.config import get_settings; s = get_settings(); print(s.musicbrainz_dump_dir, s.musicbrainz_target_catalog_size)"`
+Expected: an absolute path ending in `/crates/MusicBrainz`, then `25000`.
+
+- [ ] **Step 3: Move httpx to a main dependency**
+
+`httpx` is currently dev-only (used by the test client), but the ingestion script needs it at runtime. `uv add` alone would leave a duplicate dev entry, so remove it first:
+
+Run: `cd backend && uv remove --dev httpx && uv add httpx`
+Expected: `pyproject.toml` lists `httpx>=...` under `[project] dependencies` and no longer under `[dependency-groups] dev`.
+
+- [ ] **Step 4: Confirm the existing suite still passes**
+
+Run: `cd backend && uv run pytest -q`
+Expected: all pre-existing tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/core/config.py backend/pyproject.toml backend/uv.lock
+git commit -m "Add MusicBrainz ingestion settings and make httpx a runtime dependency"
+```
+
+---
+
+### Task 2: Catalog schema — models and migration
+
+Models and their migration ship as one task: the model tests can only pass once the migration has been applied, because the test fixture uses the Alembic-migrated dev database.
+
+**Files:**
+- Modify: `backend/src/crate_backend/models/catalog.py`
+- Create: `backend/src/crate_backend/models/artist_relationship.py`
+- Modify: `backend/src/crate_backend/models/__init__.py`
+- Create: `backend/migrations/versions/<autogenerated>_add_musicbrainz_catalog_tables.py`
+- Modify: `backend/tests/test_models.py`
+
+**Interfaces:**
+- Produces: `Genre(musicbrainz_id, name)`, `Tag(name)`, `AlbumGenre(album_id, genre_id, count)`, `AlbumTag(album_id, tag_id, count)`, `Album.genres`, `Album.tags`, `ArtistRelationship(artist_id, related_artist_id, relationship_type)` — consumed by `musicbrainz/ingest.py` (Task 5).
+
+- [ ] **Step 1: Write the failing tests**
+
+In `backend/tests/test_models.py`, add these imports alongside the existing ones:
+
+```python
+from crate_backend.models.artist_relationship import ArtistRelationship
+from crate_backend.models.catalog import AlbumGenre, AlbumTag, Artist, Genre, Tag
+```
+
+and append:
+
+```python
+async def test_album_genre_and_tag_round_trip(db_session):
+    album = Album(title="Test Album", artist_name="Test Artist")
+    genre = Genre(musicbrainz_id="test-genre-round-trip", name="test-genre-round-trip")
+    tag = Tag(name="test-tag-round-trip")
+    db_session.add_all([album, genre, tag])
+    await db_session.flush()
+
+    db_session.add(AlbumGenre(album_id=album.id, genre_id=genre.id, count=5))
+    db_session.add(AlbumTag(album_id=album.id, tag_id=tag.id, count=3))
+    await db_session.commit()
+
+    loaded = await db_session.get(Album, album.id)
+    await db_session.refresh(loaded, attribute_names=["genres", "tags"])
+    assert [g.count for g in loaded.genres] == [5]
+    assert [t.count for t in loaded.tags] == [3]
+
+
+async def test_album_genre_is_unique_per_album_and_genre(db_session):
+    album = Album(title="Test Album", artist_name="Test Artist")
+    genre = Genre(musicbrainz_id="test-genre-unique", name="test-genre-unique")
+    db_session.add_all([album, genre])
+    await db_session.flush()
+
+    db_session.add(AlbumGenre(album_id=album.id, genre_id=genre.id, count=1))
+    await db_session.flush()
+    db_session.add(AlbumGenre(album_id=album.id, genre_id=genre.id, count=2))
+
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+
+async def test_artist_relationship_round_trip(db_session):
+    member = Artist(name="Test Member", musicbrainz_id="test-artist-member")
+    band = Artist(name="Test Band", musicbrainz_id="test-artist-band")
+    db_session.add_all([member, band])
+    await db_session.flush()
+
+    edge = ArtistRelationship(
+        artist_id=member.id, related_artist_id=band.id, relationship_type="member of band"
+    )
+    db_session.add(edge)
+    await db_session.commit()
+
+    loaded = await db_session.get(ArtistRelationship, edge.id)
+    assert loaded.relationship_type == "member of band"
+    assert loaded.related_artist_id == band.id
+
+
+async def test_artist_relationship_is_unique_per_pair_and_type(db_session):
+    a = Artist(name="Test Artist A", musicbrainz_id="test-artist-a")
+    b = Artist(name="Test Artist B", musicbrainz_id="test-artist-b")
+    db_session.add_all([a, b])
+    await db_session.flush()
+
+    db_session.add(
+        ArtistRelationship(artist_id=a.id, related_artist_id=b.id, relationship_type="collaboration")
+    )
+    await db_session.flush()
+    db_session.add(
+        ArtistRelationship(artist_id=a.id, related_artist_id=b.id, relationship_type="collaboration")
+    )
+
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_models.py -v`
+Expected: collection error — `ModuleNotFoundError: No module named 'crate_backend.models.artist_relationship'`.
+
+- [ ] **Step 3: Add the catalog models**
+
+Replace `backend/src/crate_backend/models/catalog.py` with:
+
+```python
+import uuid
+
+from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from crate_backend.db.base import Base
+from crate_backend.models.mixins import TimestampMixin, UUIDPkMixin
+
+
+class Artist(UUIDPkMixin, TimestampMixin, Base):
+    __tablename__ = "artists"
+
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    # Populated once the MusicBrainz pipeline (Phase 2) backfills the catalog.
+    musicbrainz_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)
+
+    albums: Mapped[list["Album"]] = relationship(back_populates="primary_artist")
+
+
+class Genre(UUIDPkMixin, TimestampMixin, Base):
+    """MusicBrainz's curated genre vocabulary, kept separate from freeform Tag."""
+
+    __tablename__ = "genres"
+
+    musicbrainz_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class Tag(UUIDPkMixin, TimestampMixin, Base):
+    """Volunteer-voted MusicBrainz folksonomy tag. Unlike Genre, has no MBID."""
+
+    __tablename__ = "tags"
+
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class Album(UUIDPkMixin, TimestampMixin, Base):
+    __tablename__ = "albums"
+
+    title: Mapped[str] = mapped_column(String(500), index=True)
+    primary_artist_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("artists.id"), nullable=True
+    )
+    # Denormalized display name, used until a release is linked to a proper Artist row.
+    artist_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    release_year: Mapped[int | None] = mapped_column(nullable=True)
+    cover_art_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    # Canonical identity once imported from MusicBrainz (Phase 2); an album
+    # primarily corresponds to a MusicBrainz release group.
+    musicbrainz_release_group_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True, nullable=True
+    )
+    # Provenance for rows sourced from a stand-in catalog (e.g. the iTunes
+    # Search API used by the Phase 1 prototype) before MusicBrainz import.
+    external_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Validated popularity signal is selected in Phase 3; null means unknown,
+    # not obscure.
+    popularity: Mapped[float | None] = mapped_column(nullable=True)
+
+    primary_artist: Mapped["Artist | None"] = relationship(back_populates="albums")
+    genres: Mapped[list["AlbumGenre"]] = relationship(
+        back_populates="album", cascade="all, delete-orphan"
+    )
+    tags: Mapped[list["AlbumTag"]] = relationship(
+        back_populates="album", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (UniqueConstraint("external_source", "external_id"),)
+
+
+class AlbumGenre(UUIDPkMixin, TimestampMixin, Base):
+    __tablename__ = "album_genres"
+
+    album_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("albums.id"), index=True)
+    genre_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("genres.id"), index=True)
+    # MusicBrainz's vote count for this genre on this release group.
+    count: Mapped[int] = mapped_column(default=0)
+
+    album: Mapped["Album"] = relationship(back_populates="genres")
+    genre: Mapped["Genre"] = relationship()
+
+    __table_args__ = (UniqueConstraint("album_id", "genre_id"),)
+
+
+class AlbumTag(UUIDPkMixin, TimestampMixin, Base):
+    __tablename__ = "album_tags"
+
+    album_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("albums.id"), index=True)
+    tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tags.id"), index=True)
+    count: Mapped[int] = mapped_column(default=0)
+
+    album: Mapped["Album"] = relationship(back_populates="tags")
+    tag: Mapped["Tag"] = relationship()
+
+    __table_args__ = (UniqueConstraint("album_id", "tag_id"),)
+```
+
+- [ ] **Step 4: Add the ArtistRelationship model**
+
+Create `backend/src/crate_backend/models/artist_relationship.py`:
+
+```python
+import uuid
+from typing import TYPE_CHECKING
+
+from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from crate_backend.db.base import Base
+from crate_backend.models.mixins import TimestampMixin, UUIDPkMixin
+
+if TYPE_CHECKING:
+    from crate_backend.models.catalog import Artist
+
+
+class ArtistRelationship(UUIDPkMixin, TimestampMixin, Base):
+    """Directed artist-to-artist edge (member of band, collaboration).
+
+    Always stored in MusicBrainz's forward orientation — artist_id is the
+    relationship's subject (the member), related_artist_id its object (the
+    band) — so the same edge seen from both artists' records is one row.
+    """
+
+    __tablename__ = "artist_relationships"
+
+    artist_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("artists.id"), index=True)
+    related_artist_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("artists.id"), index=True)
+    relationship_type: Mapped[str] = mapped_column(String(50))
+
+    artist: Mapped["Artist"] = relationship(foreign_keys=[artist_id])
+    related_artist: Mapped["Artist"] = relationship(foreign_keys=[related_artist_id])
+
+    __table_args__ = (UniqueConstraint("artist_id", "related_artist_id", "relationship_type"),)
+```
+
+- [ ] **Step 5: Export the new models**
+
+Replace `backend/src/crate_backend/models/__init__.py` with:
+
+```python
+"""Import every model module so Base.metadata is fully populated for
+Alembic autogeneration and for creating tables in tests."""
+
+from crate_backend.models.artist_relationship import ArtistRelationship
+from crate_backend.models.catalog import Album, AlbumGenre, AlbumTag, Artist, Genre, Tag
+from crate_backend.models.event import Event
+from crate_backend.models.group import AlbumGroup, GroupAlbumMembership, GroupSettings
+from crate_backend.models.rating import Descriptor, Rating
+from crate_backend.models.recommendation import ModelVersion, Recommendation, RecommendationRun
+from crate_backend.models.user import User
+from crate_backend.models.workspace import CanvasAlbumInstance, Workspace
+
+__all__ = [
+    "Album",
+    "AlbumGenre",
+    "AlbumGroup",
+    "AlbumTag",
+    "Artist",
+    "ArtistRelationship",
+    "CanvasAlbumInstance",
+    "Descriptor",
+    "Event",
+    "Genre",
+    "GroupAlbumMembership",
+    "GroupSettings",
+    "ModelVersion",
+    "Rating",
+    "Recommendation",
+    "RecommendationRun",
+    "Tag",
+    "User",
+    "Workspace",
+]
+```
+
+- [ ] **Step 6: Run the tests — now they fail on missing tables**
+
+Run: `cd backend && uv run pytest tests/test_models.py -v`
+Expected: the 4 new tests FAIL with `UndefinedTableError: relation "genres" does not exist` (or `artist_relationships`); pre-existing tests still pass.
+
+- [ ] **Step 7: Make sure Postgres is up and at head**
+
+Run: `docker compose up -d db && cd backend && uv run alembic upgrade head`
+(`docker-compose.yml` is at the repo root; its Postgres service is `db`.)
+Expected: no errors.
+
+- [ ] **Step 8: Autogenerate the migration**
+
+Run: `cd backend && uv run alembic revision --autogenerate -m "add musicbrainz catalog tables"`
+Expected: a new file under `backend/migrations/versions/` whose `down_revision` is `'920e5937259a'`.
+
+- [ ] **Step 9: Review the generated migration**
+
+Open the new file and confirm:
+- It creates exactly `genres`, `tags`, `album_genres`, `album_tags`, `artist_relationships` — each with a UUID `id` primary key and `created_at`/`updated_at`.
+- Unique constraints: `genres.musicbrainz_id`, `genres.name`, `tags.name`, `(album_id, genre_id)`, `(album_id, tag_id)`, `(artist_id, related_artist_id, relationship_type)`.
+- `downgrade()` drops the join tables before `genres`/`tags`.
+- Nothing touches pre-existing tables. If it does, a model has a typo: fix the model, delete this migration file, and re-run Step 8.
+
+- [ ] **Step 10: Apply it and run the tests**
+
+Run: `cd backend && uv run alembic upgrade head && uv run pytest tests/test_models.py -v`
+Expected: PASS (all tests, including the 4 new ones).
+
+- [ ] **Step 11: Check the downgrade path, then return to head**
+
+Run: `cd backend && uv run alembic downgrade -1 && uv run alembic upgrade head`
+Expected: both succeed.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add backend/src/crate_backend/models/catalog.py \
+  backend/src/crate_backend/models/artist_relationship.py \
+  backend/src/crate_backend/models/__init__.py backend/migrations/versions/ \
+  backend/tests/test_models.py
+git commit -m "Add genre, tag, and artist-relationship tables for MusicBrainz ingestion"
+```
+
+---
+
+### Task 3: Dump reader — streaming JSON-lines from `.tar.xz`
+
+**Files:**
+- Create: `backend/src/crate_backend/musicbrainz/__init__.py`
+- Create: `backend/src/crate_backend/musicbrainz/dump_reader.py`
+- Create: `backend/tests/test_dump_reader.py`
+
+**Interfaces:**
+- Produces: `stream_jsonl_from_tar(archive_path: Path, member_name: str) -> Iterator[dict[str, Any]]`, `read_dump_metadata(archive_path: Path) -> dict[str, str]` — consumed by `scripts/ingest_musicbrainz.py` (Task 7).
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_dump_reader.py`:
+
+```python
+import json
+import tarfile
+from pathlib import Path
+
+import pytest
+
+from crate_backend.musicbrainz.dump_reader import read_dump_metadata, stream_jsonl_from_tar
+
+
+@pytest.fixture
+def sample_archive(tmp_path: Path) -> Path:
+    """A tiny .tar.xz laid out like a real MusicBrainz dump: small metadata
+    files first, then mbdump/<entity> as JSON-lines."""
+    files = {
+        "TIMESTAMP": "2026-09-23 01:13:07.898407+00\n",
+        "REPLICATION_SEQUENCE": "31\n",
+        "SCHEMA_SEQUENCE": "189205\n",
+        "mbdump/sample": "\n".join(
+            json.dumps(r)
+            for r in [{"id": "test-1", "name": "Alice"}, {"id": "test-2", "name": "Bob"}]
+        )
+        + "\n\n",
+    }
+    archive_path = tmp_path / "sample.tar.xz"
+    with tarfile.open(archive_path, mode="w:xz") as tf:
+        for arcname, content in files.items():
+            source = tmp_path / arcname.replace("/", "_")
+            source.write_text(content)
+            tf.add(source, arcname=arcname)
+    return archive_path
+
+
+def test_stream_jsonl_from_tar_yields_all_records(sample_archive: Path):
+    records = list(stream_jsonl_from_tar(sample_archive, "mbdump/sample"))
+    assert [r["name"] for r in records] == ["Alice", "Bob"]
+
+
+def test_stream_jsonl_from_tar_on_missing_member_yields_nothing(sample_archive: Path):
+    assert list(stream_jsonl_from_tar(sample_archive, "mbdump/does-not-exist")) == []
+
+
+def test_read_dump_metadata(sample_archive: Path):
+    metadata = read_dump_metadata(sample_archive)
+    assert metadata == {
+        "TIMESTAMP": "2026-09-23 01:13:07.898407+00",
+        "REPLICATION_SEQUENCE": "31",
+        "SCHEMA_SEQUENCE": "189205",
+    }
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_dump_reader.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'crate_backend.musicbrainz'`.
+
+- [ ] **Step 3: Implement**
+
+Create an empty `backend/src/crate_backend/musicbrainz/__init__.py`.
+
+Create `backend/src/crate_backend/musicbrainz/dump_reader.py`:
+
+```python
+"""Streaming access to MusicBrainz JSON Data Dump archives (.tar.xz holding
+mbdump/<entity> as JSON-lines plus small provenance files)."""
+
+import json
+import tarfile
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+_METADATA_FILES = frozenset({"TIMESTAMP", "SCHEMA_SEQUENCE", "REPLICATION_SEQUENCE"})
+
+
+def stream_jsonl_from_tar(archive_path: Path, member_name: str) -> Iterator[dict[str, Any]]:
+    """Yield one parsed JSON object per line of `member_name`, decompressing
+    in a single streaming pass without extracting anything to disk."""
+    with tarfile.open(archive_path, mode="r|xz") as tf:
+        for member in tf:
+            if member.name != member_name:
+                continue
+            extracted = tf.extractfile(member)
+            if extracted is None:
+                return
+            for raw_line in extracted:
+                line = raw_line.strip()
+                if line:
+                    yield json.loads(line)
+            return
+
+
+def read_dump_metadata(archive_path: Path) -> dict[str, str]:
+    """Read TIMESTAMP/SCHEMA_SEQUENCE/REPLICATION_SEQUENCE. These precede the
+    multi-GB data member in real dumps, so this stops early."""
+    found: dict[str, str] = {}
+    with tarfile.open(archive_path, mode="r|xz") as tf:
+        for member in tf:
+            if member.name in _METADATA_FILES:
+                extracted = tf.extractfile(member)
+                if extracted is not None:
+                    found[member.name] = extracted.read().decode("utf-8").strip()
+                if len(found) == len(_METADATA_FILES):
+                    break
+    return found
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_dump_reader.py -v`
+Expected: PASS (3 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/musicbrainz/__init__.py \
+  backend/src/crate_backend/musicbrainz/dump_reader.py backend/tests/test_dump_reader.py
+git commit -m "Add streaming reader for MusicBrainz .tar.xz dump archives"
+```
+
+---
+
+### Task 4: Extraction logic — filter, rank, and resolve
+
+**Files:**
+- Create: `backend/src/crate_backend/musicbrainz/extract.py`
+- Create: `backend/tests/test_extract.py`
+
+**Interfaces:**
+- Produces (consumed by Task 5 `ingest.py` and Task 7 script):
+  - `CandidateAlbum(musicbrainz_id: str, title: str, first_release_date: str | None, artist_credit: list[dict], genres: list[dict], tags: list[dict])` with property `tag_vote_total: int`
+  - `ResolvedArtistRelationship(related_artist_id: str, related_artist_name: str, relationship_type: str, direction: str)`
+  - `ResolvedArtist(musicbrainz_id: str, name: str, relationships: list[ResolvedArtistRelationship])`
+  - `filter_and_rank_release_groups(records: Iterable[dict], target_size: int) -> list[CandidateAlbum]`
+  - `artist_ids_in_credits(candidates: Iterable[CandidateAlbum]) -> set[str]`
+  - `resolve_artists(records: Iterable[dict], wanted_ids: set[str]) -> dict[str, ResolvedArtist]`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_extract.py`:
+
+```python
+from crate_backend.musicbrainz.extract import (
+    artist_ids_in_credits,
+    filter_and_rank_release_groups,
+    resolve_artists,
+)
+
+
+def _release_group(
+    *,
+    rg_id="test-rg-1",
+    primary_type="Album",
+    secondary_types=None,
+    genres=None,
+    tags=None,
+    artist_credit=None,
+    first_release_date="2020-01-01",
+):
+    return {
+        "id": rg_id,
+        "title": "Test Album",
+        "primary-type": primary_type,
+        "secondary-types": secondary_types or [],
+        "genres": [{"id": "test-genre-1", "name": "test-jazz", "count": 2}]
+        if genres is None
+        else genres,
+        "tags": [{"name": "test-smooth", "count": 1}] if tags is None else tags,
+        "artist-credit": [
+            {"name": "Test Artist", "artist": {"id": "test-artist-1", "name": "Test Artist"}}
+        ]
+        if artist_credit is None
+        else artist_credit,
+        "first-release-date": first_release_date,
+    }
+
+
+def test_filter_excludes_non_album_primary_type():
+    assert filter_and_rank_release_groups([_release_group(primary_type="Single")], 10) == []
+
+
+def test_filter_excludes_null_primary_type():
+    assert filter_and_rank_release_groups([_release_group(primary_type=None)], 10) == []
+
+
+def test_filter_excludes_disallowed_secondary_type():
+    records = [_release_group(secondary_types=["Compilation"])]
+    assert filter_and_rank_release_groups(records, 10) == []
+
+
+def test_filter_excludes_live_combined_with_disallowed_type():
+    records = [_release_group(secondary_types=["Live", "Compilation"])]
+    assert filter_and_rank_release_groups(records, 10) == []
+
+
+def test_filter_allows_live_secondary_type():
+    records = [_release_group(secondary_types=["Live"])]
+    assert len(filter_and_rank_release_groups(records, 10)) == 1
+
+
+def test_filter_excludes_records_with_no_genre_or_tag():
+    assert filter_and_rank_release_groups([_release_group(genres=[], tags=[])], 10) == []
+
+
+def test_filter_keeps_records_with_genre_but_no_tag():
+    assert len(filter_and_rank_release_groups([_release_group(tags=[])], 10)) == 1
+
+
+def test_filter_ranks_by_tag_vote_total_and_caps_at_target():
+    records = [
+        _release_group(rg_id="test-low", tags=[{"name": "x", "count": 1}]),
+        _release_group(rg_id="test-high", tags=[{"name": "x", "count": 100}]),
+        _release_group(rg_id="test-mid", tags=[{"name": "x", "count": 10}]),
+    ]
+    result = filter_and_rank_release_groups(iter(records), target_size=2)
+    assert [c.musicbrainz_id for c in result] == ["test-high", "test-mid"]
+
+
+def test_filter_normalizes_empty_release_date_to_none():
+    result = filter_and_rank_release_groups([_release_group(first_release_date="")], 10)
+    assert result[0].first_release_date is None
+
+
+def test_artist_ids_in_credits_collects_unique_ids():
+    credit = [{"name": "A", "artist": {"id": "test-artist-1", "name": "A"}}]
+    candidates = filter_and_rank_release_groups(
+        [
+            _release_group(rg_id="test-rg-1", artist_credit=credit),
+            _release_group(rg_id="test-rg-2", artist_credit=credit),
+        ],
+        10,
+    )
+    assert artist_ids_in_credits(candidates) == {"test-artist-1"}
+
+
+def test_resolve_artists_filters_to_allowlisted_relationship_types():
+    records = [
+        {
+            "id": "test-artist-1",
+            "name": "Test Artist",
+            "relations": [
+                {
+                    "type": "member of band",
+                    "direction": "forward",
+                    "target-type": "artist",
+                    "artist": {"id": "test-artist-2", "name": "Test Band"},
+                },
+                {
+                    "type": "performer",
+                    "direction": "forward",
+                    "target-type": "recording",
+                    "recording": {"id": "test-recording-1", "title": "Dropped"},
+                },
+                {
+                    "type": "wikidata",
+                    "direction": "forward",
+                    "target-type": "url",
+                    "url": {"resource": "https://www.wikidata.org/wiki/Q1"},
+                },
+            ],
+        }
+    ]
+    resolved = resolve_artists(records, wanted_ids={"test-artist-1"})
+    relationships = resolved["test-artist-1"].relationships
+    assert [(r.related_artist_id, r.relationship_type, r.direction) for r in relationships] == [
+        ("test-artist-2", "member of band", "forward")
+    ]
+
+
+def test_resolve_artists_ignores_records_not_in_wanted_ids():
+    records = [
+        {"id": "test-artist-1", "name": "Wanted", "relations": []},
+        {"id": "test-artist-2", "name": "Not Wanted", "relations": []},
+    ]
+    assert set(resolve_artists(records, {"test-artist-1"})) == {"test-artist-1"}
+
+
+def test_resolve_artists_omits_ids_missing_from_the_dump():
+    records = [{"id": "test-artist-1", "name": "Present", "relations": []}]
+    resolved = resolve_artists(records, {"test-artist-1", "test-artist-orphan"})
+    assert set(resolved) == {"test-artist-1"}
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_extract.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'crate_backend.musicbrainz.extract'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/musicbrainz/extract.py`:
+
+```python
+"""Pure filter/rank/resolve logic over parsed MusicBrainz dump records.
+No I/O, so it's unit-testable against small synthetic record lists."""
+
+import heapq
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from typing import Any
+
+ALLOWED_SECONDARY_TYPES = frozenset({"Live"})
+ARTIST_RELATIONSHIP_ALLOWLIST = frozenset({"member of band", "collaboration"})
+
+
+@dataclass
+class CandidateAlbum:
+    musicbrainz_id: str
+    title: str
+    first_release_date: str | None
+    artist_credit: list[dict[str, Any]]
+    genres: list[dict[str, Any]]
+    tags: list[dict[str, Any]]
+
+    @property
+    def tag_vote_total(self) -> int:
+        return sum(tag.get("count", 0) for tag in self.tags)
+
+
+@dataclass
+class ResolvedArtistRelationship:
+    related_artist_id: str
+    related_artist_name: str
+    relationship_type: str
+    direction: str
+
+
+@dataclass
+class ResolvedArtist:
+    musicbrainz_id: str
+    name: str
+    relationships: list[ResolvedArtistRelationship] = field(default_factory=list)
+
+
+def _is_catalog_eligible(record: dict[str, Any]) -> bool:
+    if record.get("primary-type") != "Album":
+        return False
+    if not all(t in ALLOWED_SECONDARY_TYPES for t in record.get("secondary-types") or []):
+        return False
+    # The candidate set is fixed before the artist pass runs, so this bar can
+    # only use release-group-level data.
+    return bool(record.get("genres")) or bool(record.get("tags"))
+
+
+def _to_candidate(record: dict[str, Any]) -> CandidateAlbum:
+    return CandidateAlbum(
+        musicbrainz_id=record["id"],
+        title=record["title"],
+        first_release_date=record.get("first-release-date") or None,
+        artist_credit=record.get("artist-credit") or [],
+        genres=record.get("genres") or [],
+        tags=record.get("tags") or [],
+    )
+
+
+def filter_and_rank_release_groups(
+    records: Iterable[dict[str, Any]], target_size: int
+) -> list[CandidateAlbum]:
+    """The `target_size` eligible release groups with the most tag votes,
+    highest first. Holds at most `target_size` candidates in memory, since
+    `records` is a single pass over a multi-million-row dump."""
+    candidates = (_to_candidate(r) for r in records if _is_catalog_eligible(r))
+    return heapq.nlargest(target_size, candidates, key=lambda c: c.tag_vote_total)
+
+
+def artist_ids_in_credits(candidates: Iterable[CandidateAlbum]) -> set[str]:
+    return {
+        credit["artist"]["id"]
+        for candidate in candidates
+        for credit in candidate.artist_credit
+        if (credit.get("artist") or {}).get("id")
+    }
+
+
+def _to_resolved_artist(record: dict[str, Any]) -> ResolvedArtist:
+    relationships = [
+        ResolvedArtistRelationship(
+            related_artist_id=relation["artist"]["id"],
+            related_artist_name=relation["artist"].get("name") or "",
+            relationship_type=relation["type"],
+            direction=relation.get("direction") or "forward",
+        )
+        for relation in record.get("relations") or []
+        if relation.get("type") in ARTIST_RELATIONSHIP_ALLOWLIST
+        and (relation.get("artist") or {}).get("id")
+    ]
+    return ResolvedArtist(
+        musicbrainz_id=record["id"], name=record["name"], relationships=relationships
+    )
+
+
+def resolve_artists(
+    records: Iterable[dict[str, Any]], wanted_ids: set[str]
+) -> dict[str, ResolvedArtist]:
+    """Resolve the wanted artists from a single pass over the artist dump.
+    IDs never seen in the dump are simply absent from the result."""
+    resolved: dict[str, ResolvedArtist] = {}
+    remaining = set(wanted_ids)
+    for record in records:
+        if not remaining:
+            break
+        if record.get("id") in remaining:
+            resolved[record["id"]] = _to_resolved_artist(record)
+            remaining.discard(record["id"])
+    return resolved
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_extract.py -v`
+Expected: PASS (14 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/musicbrainz/extract.py backend/tests/test_extract.py
+git commit -m "Add MusicBrainz release-group filtering and artist resolution logic"
+```
+
+---
+
+### Task 5: Idempotent DB upserts
+
+**Files:**
+- Create: `backend/src/crate_backend/musicbrainz/ingest.py`
+- Create: `backend/tests/test_musicbrainz_ingest.py`
+
+**Interfaces:**
+- Consumes: `CandidateAlbum`, `ResolvedArtist`, `ResolvedArtistRelationship` (Task 4); models from Task 2.
+- Produces: `upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Album`, `upsert_artist_relationships(session: AsyncSession, artist: ResolvedArtist) -> None` — consumed by Task 7.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_musicbrainz_ingest.py`:
+
+```python
+import pytest
+from sqlalchemy import or_, select
+
+from crate_backend.models.artist_relationship import ArtistRelationship
+from crate_backend.models.catalog import Album, AlbumGenre, AlbumTag, Artist
+from crate_backend.musicbrainz.extract import (
+    CandidateAlbum,
+    ResolvedArtist,
+    ResolvedArtistRelationship,
+)
+from crate_backend.musicbrainz.ingest import upsert_album, upsert_artist_relationships
+
+pytestmark = pytest.mark.asyncio
+
+
+def _candidate(**overrides) -> CandidateAlbum:
+    fields = dict(
+        musicbrainz_id="test-rg-1",
+        title="Test Album",
+        first_release_date="1959-08-17",
+        artist_credit=[
+            {"name": "Test Artist", "artist": {"id": "test-artist-1", "name": "Test Artist"}}
+        ],
+        genres=[{"id": "test-genre-1", "name": "test-jazz", "count": 5}],
+        tags=[{"name": "test-modal", "count": 2}],
+    )
+    fields.update(overrides)
+    return CandidateAlbum(**fields)
+
+
+async def _album(session, mbid: str) -> Album:
+    return await session.scalar(select(Album).where(Album.musicbrainz_release_group_id == mbid))
+
+
+async def _artist(session, mbid: str) -> Artist:
+    return await session.scalar(select(Artist).where(Artist.musicbrainz_id == mbid))
+
+
+async def _edges_touching(session, artist: Artist) -> list[ArtistRelationship]:
+    rows = await session.scalars(
+        select(ArtistRelationship).where(
+            or_(
+                ArtistRelationship.artist_id == artist.id,
+                ArtistRelationship.related_artist_id == artist.id,
+            )
+        )
+    )
+    return list(rows)
+
+
+async def test_upsert_album_creates_album_artist_genre_and_tag(db_session):
+    await upsert_album(db_session, _candidate())
+    await db_session.commit()
+
+    album = await _album(db_session, "test-rg-1")
+    artist = await _artist(db_session, "test-artist-1")
+    assert album.title == "Test Album"
+    assert album.release_year == 1959
+    assert album.artist_name == "Test Artist"
+    assert album.primary_artist_id == artist.id
+
+    genre_links = (await db_session.scalars(
+        select(AlbumGenre).where(AlbumGenre.album_id == album.id)
+    )).all()
+    tag_links = (await db_session.scalars(
+        select(AlbumTag).where(AlbumTag.album_id == album.id)
+    )).all()
+    assert [g.count for g in genre_links] == [5]
+    assert [t.count for t in tag_links] == [2]
+
+
+async def test_upsert_album_links_artist_missing_from_artist_dump(db_session):
+    """The artist pass never resolves this MBID; the album still links to an
+    Artist row built from the credit's embedded name."""
+    candidate = _candidate(
+        artist_credit=[
+            {"name": "Orphan Credit", "artist": {"id": "test-artist-orphan", "name": "Orphan"}}
+        ]
+    )
+    await upsert_album(db_session, candidate)
+    await db_session.commit()
+
+    album = await _album(db_session, "test-rg-1")
+    artist = await _artist(db_session, "test-artist-orphan")
+    assert album.artist_name == "Orphan Credit"
+    assert album.primary_artist_id == artist.id
+    assert await _edges_touching(db_session, artist) == []
+
+
+async def test_upsert_album_with_empty_artist_credit(db_session):
+    await upsert_album(db_session, _candidate(artist_credit=[]))
+    await db_session.commit()
+
+    album = await _album(db_session, "test-rg-1")
+    assert album.artist_name is None
+    assert album.primary_artist_id is None
+
+
+@pytest.mark.parametrize(
+    ("raw_date", "expected_year"),
+    [("1994", 1994), ("1994-05", 1994), (None, None), ("not-a-date", None), ("19", None)],
+)
+async def test_upsert_album_release_year(db_session, raw_date, expected_year):
+    await upsert_album(db_session, _candidate(first_release_date=raw_date))
+    await db_session.commit()
+
+    album = await _album(db_session, "test-rg-1")
+    assert album.release_year == expected_year
+
+
+async def test_upsert_album_clips_overlong_values(db_session):
+    long_name = "n" * 400
+    candidate = _candidate(
+        title="t" * 600,
+        artist_credit=[{"name": long_name, "artist": {"id": "test-artist-long", "name": long_name}}],
+        tags=[{"name": "g" * 300, "count": 1}],
+    )
+    await upsert_album(db_session, candidate)
+    await db_session.commit()
+
+    album = await _album(db_session, "test-rg-1")
+    assert len(album.title) == 500
+    assert len(album.artist_name) == 255
+    assert len((await _artist(db_session, "test-artist-long")).name) == 255
+
+
+async def test_upsert_album_is_idempotent(db_session):
+    await upsert_album(db_session, _candidate())
+    await db_session.commit()
+    await upsert_album(db_session, _candidate(title="Renamed"))
+    await db_session.commit()
+
+    albums = (await db_session.scalars(
+        select(Album).where(Album.musicbrainz_release_group_id == "test-rg-1")
+    )).all()
+    assert [a.title for a in albums] == ["Renamed"]
+    genre_links = (await db_session.scalars(
+        select(AlbumGenre).where(AlbumGenre.album_id == albums[0].id)
+    )).all()
+    assert len(genre_links) == 1
+
+
+def _band_seen_by(mbid: str, direction: str, related_mbid: str) -> ResolvedArtist:
+    return ResolvedArtist(
+        musicbrainz_id=mbid,
+        name=mbid,
+        relationships=[
+            ResolvedArtistRelationship(
+                related_artist_id=related_mbid,
+                related_artist_name=related_mbid,
+                relationship_type="member of band",
+                direction=direction,
+            )
+        ],
+    )
+
+
+async def test_upsert_artist_relationships_stores_forward_orientation(db_session):
+    # The band's own record lists its member with direction "backward".
+    await upsert_artist_relationships(
+        db_session, _band_seen_by("test-band", "backward", "test-member")
+    )
+    await db_session.commit()
+
+    member = await _artist(db_session, "test-member")
+    band = await _artist(db_session, "test-band")
+    edges = await _edges_touching(db_session, band)
+    assert [(e.artist_id, e.related_artist_id) for e in edges] == [(member.id, band.id)]
+
+
+async def test_same_edge_from_both_artists_is_stored_once(db_session):
+    await upsert_artist_relationships(
+        db_session, _band_seen_by("test-band", "backward", "test-member")
+    )
+    await upsert_artist_relationships(
+        db_session, _band_seen_by("test-member", "forward", "test-band")
+    )
+    await db_session.commit()
+
+    band = await _artist(db_session, "test-band")
+    assert len(await _edges_touching(db_session, band)) == 1
+
+
+async def test_upsert_artist_relationships_is_idempotent(db_session):
+    artist = _band_seen_by("test-band", "backward", "test-member")
+    await upsert_artist_relationships(db_session, artist)
+    await db_session.commit()
+    await upsert_artist_relationships(db_session, artist)
+    await db_session.commit()
+
+    band = await _artist(db_session, "test-band")
+    assert len(await _edges_touching(db_session, band)) == 1
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_musicbrainz_ingest.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'crate_backend.musicbrainz.ingest'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/musicbrainz/ingest.py`:
+
+```python
+"""Idempotent upserts of parsed MusicBrainz data into Crate's catalog
+tables. Rows are matched by MusicBrainz ID, so re-runs update in place."""
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from crate_backend.models.artist_relationship import ArtistRelationship
+from crate_backend.models.catalog import Album, AlbumGenre, AlbumTag, Artist, Genre, Tag
+from crate_backend.musicbrainz.extract import CandidateAlbum, ResolvedArtist
+
+_TITLE_MAX = 500
+_NAME_MAX = 255
+
+
+# MusicBrainz caps no name lengths; one overlong value would otherwise abort
+# the whole single-transaction ingest.
+def _clip(value: str, max_length: int) -> str:
+    return value[:max_length]
+
+
+def _release_year(first_release_date: str | None) -> int | None:
+    year = (first_release_date or "")[:4]
+    return int(year) if len(year) == 4 and year.isdigit() else None
+
+
+async def _get_or_create_artist(session: AsyncSession, musicbrainz_id: str, name: str) -> Artist:
+    artist = await session.scalar(select(Artist).where(Artist.musicbrainz_id == musicbrainz_id))
+    if artist is None:
+        artist = Artist(musicbrainz_id=musicbrainz_id, name=_clip(name, _NAME_MAX))
+        session.add(artist)
+        await session.flush()
+    return artist
+
+
+async def _get_or_create_genre(session: AsyncSession, musicbrainz_id: str, name: str) -> Genre:
+    genre = await session.scalar(select(Genre).where(Genre.musicbrainz_id == musicbrainz_id))
+    if genre is None:
+        genre = Genre(musicbrainz_id=musicbrainz_id, name=_clip(name, _NAME_MAX))
+        session.add(genre)
+        await session.flush()
+    return genre
+
+
+async def _get_or_create_tag(session: AsyncSession, name: str) -> Tag:
+    name = _clip(name, _NAME_MAX)
+    tag = await session.scalar(select(Tag).where(Tag.name == name))
+    if tag is None:
+        tag = Tag(name=name)
+        session.add(tag)
+        await session.flush()
+    return tag
+
+
+async def upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Album:
+    primary_credit = candidate.artist_credit[0] if candidate.artist_credit else {}
+    credit_name = primary_credit.get("name")
+    credited = primary_credit.get("artist") or {}
+    primary_artist = None
+    if credited.get("id"):
+        primary_artist = await _get_or_create_artist(
+            session, credited["id"], credited.get("name") or credit_name or ""
+        )
+
+    album = await session.scalar(
+        select(Album).where(Album.musicbrainz_release_group_id == candidate.musicbrainz_id)
+    )
+    if album is None:
+        album = Album(musicbrainz_release_group_id=candidate.musicbrainz_id)
+        session.add(album)
+    album.title = _clip(candidate.title, _TITLE_MAX)
+    album.artist_name = _clip(credit_name, _NAME_MAX) if credit_name else None
+    album.primary_artist = primary_artist
+    album.release_year = _release_year(candidate.first_release_date)
+    await session.flush()
+
+    for genre in candidate.genres:
+        genre_row = await _get_or_create_genre(session, genre["id"], genre["name"])
+        link = await session.scalar(
+            select(AlbumGenre).where(
+                AlbumGenre.album_id == album.id, AlbumGenre.genre_id == genre_row.id
+            )
+        )
+        if link is None:
+            link = AlbumGenre(album_id=album.id, genre_id=genre_row.id)
+            session.add(link)
+        link.count = genre.get("count", 0)
+
+    for tag in candidate.tags:
+        tag_row = await _get_or_create_tag(session, tag["name"])
+        link = await session.scalar(
+            select(AlbumTag).where(AlbumTag.album_id == album.id, AlbumTag.tag_id == tag_row.id)
+        )
+        if link is None:
+            link = AlbumTag(album_id=album.id, tag_id=tag_row.id)
+            session.add(link)
+        link.count = tag.get("count", 0)
+
+    await session.flush()
+    return album
+
+
+async def upsert_artist_relationships(session: AsyncSession, artist: ResolvedArtist) -> None:
+    artist_row = await _get_or_create_artist(session, artist.musicbrainz_id, artist.name)
+    for rel in artist.relationships:
+        related_row = await _get_or_create_artist(
+            session, rel.related_artist_id, rel.related_artist_name
+        )
+        # Normalize to MusicBrainz's forward orientation so the edge is one
+        # row whether it was read from the band's record or the member's.
+        subject, obj = (
+            (related_row, artist_row) if rel.direction == "backward" else (artist_row, related_row)
+        )
+        existing = await session.scalar(
+            select(ArtistRelationship).where(
+                ArtistRelationship.artist_id == subject.id,
+                ArtistRelationship.related_artist_id == obj.id,
+                ArtistRelationship.relationship_type == rel.relationship_type,
+            )
+        )
+        if existing is None:
+            session.add(
+                ArtistRelationship(
+                    artist_id=subject.id,
+                    related_artist_id=obj.id,
+                    relationship_type=rel.relationship_type,
+                )
+            )
+            await session.flush()
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_musicbrainz_ingest.py -v`
+Expected: PASS (13 tests, counting each parametrized case).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/musicbrainz/ingest.py backend/tests/test_musicbrainz_ingest.py
+git commit -m "Add idempotent DB upserts for MusicBrainz albums and artist relationships"
+```
+
+---
+
+### Task 6: Cover Art Archive client
+
+**Files:**
+- Create: `backend/src/crate_backend/musicbrainz/cover_art.py`
+- Create: `backend/tests/test_cover_art.py`
+
+**Interfaces:**
+- Produces: `front_cover_url(release_group_mbid: str) -> str`, `fetch_cover_art_url(client: httpx.AsyncClient, release_group_mbid: str) -> str | None`, `iter_cover_art(client, release_group_mbids: list[str]) -> AsyncIterator[tuple[str, str | None]]` — consumed by Task 7.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_cover_art.py`:
+
+```python
+import httpx
+import pytest
+
+from crate_backend.musicbrainz import cover_art
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def sleeps(monkeypatch) -> list[float]:
+    recorded: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        recorded.append(seconds)
+
+    monkeypatch.setattr(cover_art, "_sleep", fake_sleep)
+    return recorded
+
+
+def _client(responses: list) -> tuple[httpx.AsyncClient, list[httpx.Request]]:
+    """Client whose transport returns (or raises) `responses` in order."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        item = responses[min(len(requests), len(responses)) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), requests
+
+
+async def test_redirect_means_art_exists_and_is_not_followed(sleeps):
+    client, requests = _client(
+        [httpx.Response(307, headers={"location": "https://archive.org/huge-image.jpg"})]
+    )
+    async with client:
+        result = await cover_art.fetch_cover_art_url(client, "test-mbid")
+    assert result == cover_art.front_cover_url("test-mbid")
+    assert len(requests) == 1
+
+
+async def test_200_means_art_exists(sleeps):
+    client, _ = _client([httpx.Response(200)])
+    async with client:
+        assert await cover_art.fetch_cover_art_url(client, "test-mbid") is not None
+
+
+async def test_404_returns_none_without_retrying(sleeps):
+    client, requests = _client([httpx.Response(404)])
+    async with client:
+        assert await cover_art.fetch_cover_art_url(client, "test-mbid") is None
+    assert len(requests) == 1
+
+
+async def test_other_client_error_returns_none_without_raising(sleeps):
+    client, requests = _client([httpx.Response(400)])
+    async with client:
+        assert await cover_art.fetch_cover_art_url(client, "test-mbid") is None
+    assert len(requests) == 1
+
+
+async def test_429_retries_with_backoff(sleeps):
+    client, requests = _client([httpx.Response(429), httpx.Response(429), httpx.Response(307)])
+    async with client:
+        assert await cover_art.fetch_cover_art_url(client, "test-mbid") is not None
+    assert len(requests) == 3
+    assert sleeps == [1.0, 2.0]
+
+
+async def test_network_error_is_retried(sleeps):
+    client, _ = _client([httpx.ConnectError("connection reset"), httpx.Response(307)])
+    async with client:
+        assert await cover_art.fetch_cover_art_url(client, "test-mbid") is not None
+
+
+async def test_gives_up_after_max_retries(sleeps):
+    client, requests = _client([httpx.Response(503)])
+    async with client:
+        assert await cover_art.fetch_cover_art_url(client, "test-mbid") is None
+    assert len(requests) == cover_art.MAX_RETRIES + 1
+    assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+
+async def test_backoff_is_capped(monkeypatch, sleeps):
+    monkeypatch.setattr(cover_art, "MAX_RETRIES", 8)
+    client, _ = _client([httpx.Response(503)])
+    async with client:
+        await cover_art.fetch_cover_art_url(client, "test-mbid")
+    assert max(sleeps) == cover_art.MAX_BACKOFF_SECONDS
+
+
+async def test_iter_cover_art_paces_requests(sleeps):
+    client, _ = _client([httpx.Response(404)])
+    async with client:
+        results = [item async for item in cover_art.iter_cover_art(client, ["a", "b"])]
+    assert results == [("a", None), ("b", None)]
+    assert sleeps == [cover_art.REQUEST_INTERVAL_SECONDS] * 2
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_cover_art.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'crate_backend.musicbrainz.cover_art'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/musicbrainz/cover_art.py`:
+
+```python
+"""Rate-limited existence check against the Cover Art Archive.
+
+Requests the release group's /front URL without following its redirect, so
+checking ~25,000 albums doesn't download ~25,000 full-size images.
+"""
+
+import asyncio
+from collections.abc import AsyncIterator
+
+import httpx
+
+BASE_URL = "https://coverartarchive.org"
+REQUEST_INTERVAL_SECONDS = 1.0
+MAX_RETRIES = 5
+INITIAL_BACKOFF_SECONDS = 1.0
+MAX_BACKOFF_SECONDS = 60.0
+_ART_EXISTS_STATUS_CODES = frozenset({200, 301, 302, 303, 307, 308})
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Module-level so tests can replace waiting without patching asyncio globally.
+_sleep = asyncio.sleep
+
+
+def front_cover_url(release_group_mbid: str) -> str:
+    return f"{BASE_URL}/release-group/{release_group_mbid}/front"
+
+
+async def fetch_cover_art_url(client: httpx.AsyncClient, release_group_mbid: str) -> str | None:
+    """The front-cover URL if the release group has art, else None. Retries
+    rate limiting, server errors and network errors; never raises."""
+    url = front_cover_url(release_group_mbid)
+    backoff = INITIAL_BACKOFF_SECONDS
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = await client.get(url, follow_redirects=False)
+        except httpx.TransportError:
+            pass
+        else:
+            if response.status_code in _ART_EXISTS_STATUS_CODES:
+                return url
+            if response.status_code not in _RETRYABLE_STATUS_CODES:
+                return None
+        if attempt < MAX_RETRIES:
+            await _sleep(backoff)
+            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+    return None
+
+
+async def iter_cover_art(
+    client: httpx.AsyncClient, release_group_mbids: list[str]
+) -> AsyncIterator[tuple[str, str | None]]:
+    """Yield (mbid, url_or_none) one at a time, at most one request per
+    REQUEST_INTERVAL_SECONDS, so callers can save progress as they go."""
+    for mbid in release_group_mbids:
+        yield mbid, await fetch_cover_art_url(client, mbid)
+        await _sleep(REQUEST_INTERVAL_SECONDS)
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_cover_art.py -v`
+Expected: PASS (9 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/musicbrainz/cover_art.py backend/tests/test_cover_art.py
+git commit -m "Add rate-limited Cover Art Archive client"
+```
+
+---
+
+### Task 7: CLI orchestration script
+
+**Files:**
+- Create: `backend/src/crate_backend/scripts/ingest_musicbrainz.py`
+- Create: `backend/tests/test_ingest_musicbrainz_script.py`
+
+**Interfaces:**
+- Consumes: Task 1 settings; Task 3 `stream_jsonl_from_tar`, `read_dump_metadata`; Task 4 `filter_and_rank_release_groups`, `artist_ids_in_credits`, `resolve_artists`; Task 5 `upsert_album`, `upsert_artist_relationships`; Task 6 `iter_cover_art`.
+- Produces: `ingest_dumps(dump_dir: Path, target_size: int) -> None`, `fetch_missing_cover_art() -> None`, and CLI flags `--skip-cover-art` / `--cover-art-only` (mutually exclusive).
+
+- [ ] **Step 1: Write the failing tests**
+
+These tests monkeypatch the dump readers and the cover art iterator so they run against small fixtures, and route the script's sessions into the rollback-wrapped `db_session`. That exercises the real wiring between modules, which is where parameter-order and naming mistakes show up.
+
+Create `backend/tests/test_ingest_musicbrainz_script.py`:
+
+```python
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+
+from crate_backend.models.artist_relationship import ArtistRelationship
+from crate_backend.models.catalog import Album, Artist
+from crate_backend.scripts import ingest_musicbrainz
+
+pytestmark = pytest.mark.asyncio
+
+_RELEASE_GROUPS = [
+    {
+        "id": "test-rg-1",
+        "title": "Test Album",
+        "primary-type": "Album",
+        "secondary-types": [],
+        "first-release-date": "1959-08-17",
+        "genres": [{"id": "test-genre-1", "name": "test-jazz", "count": 5}],
+        "tags": [{"name": "test-modal", "count": 2}],
+        "artist-credit": [
+            {"name": "Test Artist", "artist": {"id": "test-artist-1", "name": "Test Artist"}}
+        ],
+    },
+    {
+        "id": "test-rg-single",
+        "title": "Filtered Out",
+        "primary-type": "Single",
+        "secondary-types": [],
+        "genres": [{"id": "test-genre-1", "name": "test-jazz", "count": 5}],
+        "tags": [],
+        "artist-credit": [],
+    },
+]
+
+_ARTISTS = [
+    {
+        "id": "test-artist-1",
+        "name": "Test Artist",
+        "relations": [
+            {
+                "type": "collaboration",
+                "direction": "forward",
+                "artist": {"id": "test-artist-2", "name": "Test Collaborator"},
+            }
+        ],
+    }
+]
+
+
+class _SessionFactory:
+    """Stands in for async_session_factory: `async with factory() as s`
+    yields the rollback-wrapped test session instead of a real one."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+@pytest.fixture
+def script(monkeypatch, db_session):
+    monkeypatch.setattr(ingest_musicbrainz, "async_session_factory", _SessionFactory(db_session))
+    monkeypatch.setattr(
+        ingest_musicbrainz, "read_dump_metadata", lambda archive: {"SCHEMA_SEQUENCE": "test"}
+    )
+
+    def fake_stream(archive_path: Path, member_name: str):
+        return iter(_RELEASE_GROUPS if member_name == "mbdump/release-group" else _ARTISTS)
+
+    monkeypatch.setattr(ingest_musicbrainz, "stream_jsonl_from_tar", fake_stream)
+    return ingest_musicbrainz
+
+
+async def test_ingest_dumps_writes_albums_and_relationships(script, db_session):
+    await script.ingest_dumps(dump_dir=Path("/unused"), target_size=10)
+
+    album = await db_session.scalar(
+        select(Album).where(Album.musicbrainz_release_group_id == "test-rg-1")
+    )
+    assert album.title == "Test Album"
+    assert await db_session.scalar(
+        select(Album).where(Album.musicbrainz_release_group_id == "test-rg-single")
+    ) is None
+
+    artist = await db_session.scalar(select(Artist).where(Artist.musicbrainz_id == "test-artist-1"))
+    edges = (await db_session.scalars(
+        select(ArtistRelationship).where(ArtistRelationship.artist_id == artist.id)
+    )).all()
+    assert [e.relationship_type for e in edges] == ["collaboration"]
+
+
+async def test_fetch_missing_cover_art_saves_found_urls(script, db_session, monkeypatch):
+    album = Album(title="Test Album", musicbrainz_release_group_id="test-rg-art")
+    db_session.add(album)
+    await db_session.flush()
+
+    async def fake_iter(client, mbids):
+        for mbid in mbids:
+            yield mbid, (f"https://example.test/{mbid}" if mbid == "test-rg-art" else None)
+
+    monkeypatch.setattr(script, "iter_cover_art", fake_iter)
+    await script.fetch_missing_cover_art()
+
+    await db_session.refresh(album)
+    assert album.cover_art_url == "https://example.test/test-rg-art"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_ingest_musicbrainz_script.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'crate_backend.scripts.ingest_musicbrainz'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/scripts/ingest_musicbrainz.py`:
+
+```python
+"""Import MusicBrainz JSON Data Dumps into Crate's album catalog (Phase 2).
+
+Design: docs/superpowers/specs/2026-09-20-musicbrainz-ingestion-design.md
+
+Run with: uv run python -m crate_backend.scripts.ingest_musicbrainz [--skip-cover-art | --cover-art-only]
+"""
+
+import argparse
+import asyncio
+from pathlib import Path
+
+import httpx
+from sqlalchemy import select
+
+from crate_backend.core.config import get_settings
+from crate_backend.db.session import async_session_factory
+from crate_backend.models.catalog import Album
+from crate_backend.musicbrainz.cover_art import iter_cover_art
+from crate_backend.musicbrainz.dump_reader import read_dump_metadata, stream_jsonl_from_tar
+from crate_backend.musicbrainz.extract import (
+    artist_ids_in_credits,
+    filter_and_rank_release_groups,
+    resolve_artists,
+)
+from crate_backend.musicbrainz.ingest import upsert_album, upsert_artist_relationships
+
+_PROGRESS_EVERY = 1000
+_COVER_ART_COMMIT_EVERY = 100
+
+
+def _percent(part: int, whole: int) -> str:
+    return f"{100 * part / whole:.1f}%" if whole else "n/a"
+
+
+async def ingest_dumps(dump_dir: Path, target_size: int) -> None:
+    release_group_archive = dump_dir / "release-group.tar.xz"
+    artist_archive = dump_dir / "artist.tar.xz"
+    for archive in (release_group_archive, artist_archive):
+        print(f"{archive.name}: {read_dump_metadata(archive)}")
+
+    print("Filtering release groups (streams the whole dump; takes several minutes)...")
+    candidates = filter_and_rank_release_groups(
+        stream_jsonl_from_tar(release_group_archive, "mbdump/release-group"), target_size
+    )
+    print(f"Selected {len(candidates)} candidate albums.")
+
+    wanted_ids = artist_ids_in_credits(candidates)
+    print(f"Resolving {len(wanted_ids)} credited artists...")
+    artists = resolve_artists(stream_jsonl_from_tar(artist_archive, "mbdump/artist"), wanted_ids)
+    print(f"Resolved {len(artists)} of {len(wanted_ids)} credited artists.")
+
+    async with async_session_factory() as session:
+        for index, candidate in enumerate(candidates, start=1):
+            await upsert_album(session, candidate)
+            if index % _PROGRESS_EVERY == 0:
+                print(f"  upserted {index}/{len(candidates)} albums")
+        for artist in artists.values():
+            await upsert_artist_relationships(session, artist)
+        await session.commit()
+
+    total = len(candidates)
+    print(
+        f"Ingested {total} albums. Coverage: "
+        f"genre {_percent(sum(1 for c in candidates if c.genres), total)}, "
+        f"tag {_percent(sum(1 for c in candidates if c.tags), total)}, "
+        f"resolved artists with a relationship "
+        f"{_percent(sum(1 for a in artists.values() if a.relationships), len(artists))}."
+    )
+
+
+async def fetch_missing_cover_art() -> None:
+    """Check Cover Art Archive for every MusicBrainz album without a
+    cover_art_url, committing as it goes so an interrupted run keeps its
+    progress. Albums with no art stay null and are re-checked next run."""
+    async with async_session_factory() as session:
+        albums = (
+            await session.scalars(
+                select(Album).where(
+                    Album.musicbrainz_release_group_id.is_not(None),
+                    Album.cover_art_url.is_(None),
+                )
+            )
+        ).all()
+        by_mbid = {album.musicbrainz_release_group_id: album for album in albums}
+        print(f"Checking cover art for {len(by_mbid)} albums (about 1 per second)...")
+
+        found = 0
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            async for index, (mbid, url) in _enumerate(iter_cover_art(client, list(by_mbid))):
+                if url is not None:
+                    by_mbid[mbid].cover_art_url = url
+                    found += 1
+                if index % _COVER_ART_COMMIT_EVERY == 0:
+                    await session.commit()
+                    print(f"  checked {index}/{len(by_mbid)}, found {found}")
+        await session.commit()
+    print(f"Found cover art for {found} of {len(by_mbid)} albums.")
+
+
+async def _enumerate(iterator):
+    index = 0
+    async for item in iterator:
+        index += 1
+        yield index, item
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Import MusicBrainz dumps into Crate.")
+    stage = parser.add_mutually_exclusive_group()
+    stage.add_argument(
+        "--skip-cover-art", action="store_true", help="Only ingest the dumps."
+    )
+    stage.add_argument(
+        "--cover-art-only",
+        action="store_true",
+        help="Skip the dumps; only fetch cover art for albums that don't have it yet.",
+    )
+    args = parser.parse_args()
+    settings = get_settings()
+
+    async def _run() -> None:
+        if not args.cover_art_only:
+            await ingest_dumps(
+                Path(settings.musicbrainz_dump_dir), settings.musicbrainz_target_catalog_size
+            )
+        if not args.skip_cover_art:
+            await fetch_missing_cover_art()
+
+    asyncio.run(_run())
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_ingest_musicbrainz_script.py -v`
+Expected: PASS (2 tests).
+
+- [ ] **Step 5: Run the full suite and lint**
+
+Run: `cd backend && uv run pytest -q && uv run ruff check src tests`
+Expected: all tests pass; no lint errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/src/crate_backend/scripts/ingest_musicbrainz.py \
+  backend/tests/test_ingest_musicbrainz_script.py
+git commit -m "Add MusicBrainz ingestion CLI script"
+```
+
+---
+
+### Task 8: Full-scale run and seed-catalog removal (manual runbook)
+
+Not automated code: this runs Task 7's script once, by hand, against the real multi-GB archives.
+
+**Files:** `docs/crate-ml-engineering-project-plan.md` (status note only)
+
+- [ ] **Step 1: Confirm the archives are in place**
+
+Run: `ls -la MusicBrainz/` (from the repo root)
+Expected: `release-group.tar.xz` and `artist.tar.xz` present — the SHA256-verified 2026-09-23 snapshot. Set `CRATE_MUSICBRAINZ_DUMP_DIR` only if they live somewhere other than `<repo root>/MusicBrainz`.
+
+- [ ] **Step 2: Ingest the dumps (no cover art)**
+
+Run: `cd backend && uv run python -m crate_backend.scripts.ingest_musicbrainz --skip-cover-art`
+Expected: roughly 10–15 minutes; ends with an `Ingested N albums. Coverage: ...` line. Everything commits in one transaction, so a failure leaves the database unchanged — diagnose and re-run rather than continuing.
+
+- [ ] **Step 3: Spot-check the counts**
+
+Run:
+```bash
+cd backend && uv run python -c "
+import asyncio
+from sqlalchemy import func, select
+from crate_backend.db.session import async_session_factory
+from crate_backend.models import Album, AlbumGenre, ArtistRelationship
+
+async def main():
+    async with async_session_factory() as s:
+        albums = await s.scalar(select(func.count()).select_from(Album).where(Album.musicbrainz_release_group_id.is_not(None)))
+        genre_links = await s.scalar(select(func.count()).select_from(AlbumGenre))
+        edges = await s.scalar(select(func.count()).select_from(ArtistRelationship))
+        print(f'albums={albums} genre_links={genre_links} artist_edges={edges}')
+
+asyncio.run(main())
+"
+```
+Expected: `albums` equals the target size (25,000 by default — the eligible pool is far larger); `genre_links` and `artist_edges` are non-zero.
+
+- [ ] **Step 4: Fetch cover art**
+
+Run: `cd backend && uv run python -m crate_backend.scripts.ingest_musicbrainz --cover-art-only`
+Expected: about 1 second per album (roughly 7 hours for 25,000), so run it somewhere it can stay up. Progress commits every 100 albums; if interrupted, re-run the same command to continue with the albums that still have no art.
+
+- [ ] **Step 5: Remove the Phase 1 seed albums**
+
+The spec replaces the 141 seed albums rather than keeping them alongside. They may be referenced by canvas instances, ratings, or recommendations in the dev database, so the delete runs in one transaction and rolls back rather than cascading into user data:
+
+```bash
+cd backend && uv run python -c "
+import asyncio
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
+from crate_backend.db.session import async_session_factory
+from crate_backend.models import Album
+
+async def main():
+    async with async_session_factory() as s:
+        try:
+            result = await s.execute(delete(Album).where(Album.external_source == 'seed'))
+            await s.commit()
+            print(f'Removed {result.rowcount} seed albums.')
+        except IntegrityError as exc:
+            await s.rollback()
+            print('Nothing deleted: seed albums are still referenced.', exc.orig)
+
+asyncio.run(main())
+"
+```
+Expected: `Removed 141 seed albums.` If it reports references instead, stop and decide with the project owner whether that canvas/rating data should be cleared — don't force it.
+
+- [ ] **Step 6: Record Phase 2 completion**
+
+In `docs/crate-ml-engineering-project-plan.md` (the tracked copy under `docs/`, not the untracked one at the repo root), add under Phase 2's `### Completion criterion`: `**Status:** Complete as of <date> — <N> albums ingested from the 2026-09-23 MusicBrainz snapshot.`
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add docs/crate-ml-engineering-project-plan.md
+git commit -m "Mark Phase 2 (MusicBrainz ingestion) complete"
+```
+
+---
+
+## Self-Review Notes
+
+**Spec coverage:** catalog scope and ranking → Task 4; acquisition (dumps only, no `release`) → Task 3; pipeline stages 1–2 → Tasks 4, 5, 7; stage 3 cover art → Tasks 6, 7; resolved decisions — allowlist (Task 4), separate genre/tag tables with counts (Task 2), schema (Task 2), testing and coverage logging (every task; Task 7's coverage line), provenance logging (Task 7 prints dump metadata), rate limiting (Task 6), label intentionally absent. Seed replacement → Task 8.
+
+**Type consistency:** `CandidateAlbum`, `ResolvedArtist(musicbrainz_id, name, relationships)`, and `ResolvedArtistRelationship` are constructed with the same fields in Tasks 4, 5, and 7. `ArtistRelationship` has no `direction` column; direction is consumed only in Task 5's normalization. `iter_cover_art` is defined in Task 6 and imported by name in Task 7, which is also what Task 7's test monkeypatches.
+
+**Review Focus coverage:** orphaned credit → `test_resolve_artists_omits_ids_missing_from_the_dump` (Task 4) and `test_upsert_album_links_artist_missing_from_artist_dump` (Task 5); dates → `test_upsert_album_release_year` (Task 5); idempotency and two-sided edges → `test_upsert_album_is_idempotent`, `test_upsert_artist_relationships_is_idempotent`, `test_same_edge_from_both_artists_is_stored_once` (Task 5); overlong names → `test_upsert_album_clips_overlong_values` (Task 5); cover art failures and resumability → Task 6's retry/404/400/network tests and Task 7's `test_fetch_missing_cover_art_saves_found_urls`.
