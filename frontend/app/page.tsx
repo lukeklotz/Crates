@@ -29,6 +29,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
 type Item = {
   id: string;
+  albumId: string;
   title: string;
   artist: string;
   src: string;
@@ -89,6 +90,7 @@ export default function Home() {
     }
   }
   function add(
+    albumId: string,
     title: string,
     artist: string,
     src: string,
@@ -101,6 +103,7 @@ export default function Home() {
       ...a,
       {
         id,
+        albumId,
         title,
         artist,
         src,
@@ -723,6 +726,7 @@ export default function Home() {
                       key={r.id}
                       onClick={() => {
                         add(
+                          r.id,
                           r.title,
                           r.artist_name ?? 'Unknown artist',
                           r.cover_art_url ?? '/album-placeholder.svg',
