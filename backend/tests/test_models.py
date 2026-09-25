@@ -137,3 +137,33 @@ async def test_artist_relationship_is_unique_per_pair_and_type(db_session):
 
     with pytest.raises(IntegrityError):
         await db_session.commit()
+
+
+async def test_popularity_signal_defaults_and_relationship(db_session):
+    from crate_backend.models.popularity import PopularitySignal
+
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.flush()
+
+    signal = PopularitySignal(album_id=album.id)
+    db_session.add(signal)
+    await db_session.commit()
+    await db_session.refresh(signal)
+
+    assert signal.lastfm_listeners is None
+    assert signal.lastfm_fetched_at is None
+    assert signal.sandbox_add_count == 0
+    assert signal.album_id == album.id
+
+
+async def test_popularity_signal_is_unique_per_album(db_session):
+    from crate_backend.models.popularity import PopularitySignal
+
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.flush()
+    db_session.add_all([PopularitySignal(album_id=album.id), PopularitySignal(album_id=album.id)])
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()

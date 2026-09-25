@@ -5,6 +5,7 @@ from crate_backend.models.artist_relationship import ArtistRelationship
 from crate_backend.models.catalog import Album, AlbumGenre, AlbumTag, Artist, Genre, Tag
 from crate_backend.models.event import Event
 from crate_backend.models.group import AlbumGroup, GroupAlbumMembership, GroupSettings
+from crate_backend.models.popularity import PopularitySignal
 from crate_backend.models.rating import Descriptor, Rating
 from crate_backend.models.recommendation import ModelVersion, Recommendation, RecommendationRun
 from crate_backend.models.user import User
@@ -24,6 +25,7 @@ __all__ = [
     "GroupAlbumMembership",
     "GroupSettings",
     "ModelVersion",
+    "PopularitySignal",
     "Rating",
     "Recommendation",
     "RecommendationRun",
