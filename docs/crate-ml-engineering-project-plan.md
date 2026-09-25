@@ -213,6 +213,25 @@ Create simple, explainable systems that trained models must outperform.
 
 A group containing one or more albums produces useful, explainable recommendations without a trained model or required ratings. Popularity preferences measurably steer results where signal coverage supports them.
 
+**Status:** Thin version complete as of 2026-09-24. Phase 3 was deliberately cut down to a single baseline so the project reaches ML work (Phase 4) sooner. The completion criterion above is only partly met: recommendations are explainable, but popularity steering is not built and nothing has been evaluated yet.
+
+- **Done:**
+  - Step 2: genre/tag overlap, scored with Jaccard similarity.
+  - Step 5: seed albums are excluded.
+  - Step 7: deterministic shared-term explanations.
+  - Step 9, partly: seeds in a group have equal influence, but results are not yet compared against single-seed recommendations.
+  - All of this is exposed as `POST /recommendations` and wired into the group panel.
+- **Step 1, partly:** Last.fm listener counts were chosen as the popularity signal, and a backfill script exists. Coverage hasn't been measured yet, Last.fm's API terms haven't been reviewed for this use, and no popularity baseline has been built.
+- **Deferred:**
+  - Step 3: shared-musician and producer graph features. Blocked by the missing per-album credits from Phase 2.
+  - Step 4: hand-weighted signal combination.
+  - Step 5, partly: explicit exclusions for rated or already-heard albums.
+  - Step 6: diversity.
+  - Step 8: a hand-reviewed evaluation set. Needed before Phase 4 results can be compared with this baseline.
+  - Step 10: popularity settings. The UI shows these options disabled.
+
+Details, known limitations, and measured latency are in `docs/recommendation-systems.md`. The design is in `docs/superpowers/specs/2026-09-24-overlap-baseline-recommender-design.md`.
+
 ---
 
 ## Phase 4 — Build the scikit-learn textual recommender
