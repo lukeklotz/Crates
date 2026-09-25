@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/sheet';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Spinner } from '@/components/ui/spinner';
 
 type Item = {
   id: string;
@@ -47,6 +48,25 @@ type SearchResult = {
   release_year: number | null;
   cover_art_url: string | null;
 };
+type Recommendation = {
+  id: string;
+  title: string;
+  artist_name: string | null;
+  release_year: number | null;
+  cover_art_url: string | null;
+  score: number;
+  shared_terms: string[];
+};
+type RecommendationState = {
+  status: 'loading' | 'ready' | 'error';
+  results: Recommendation[];
+  reason: string | null;
+  // Sorted album ids the results were computed for; differs from the
+  // group's current key when the group has changed since.
+  seedKey: string;
+};
+const seedKeyOf = (albumIds: string[]) =>
+  [...new Set(albumIds)].sort().join(',');
 const uid = () => crypto.randomUUID();
 export default function Home() {
   const [items, setItems] = useState<Item[]>([]),
@@ -63,6 +83,9 @@ export default function Home() {
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(''),
     [dragging, setDragging] = useState(false);
+  const [recommendations, setRecommendations] = useState<
+    Record<string, RecommendationState>
+  >({});
   const [history, setHistory] = useState<{ items: Item[]; groups: Group[] }[]>(
     [],
   );
@@ -148,6 +171,51 @@ export default function Home() {
     setActiveGroup(id);
     setNotice('Group created. Open its arrow to set a discovery direction.');
   }
+  async function findRecommendations(groupId: string) {
+    const albumIds = [
+      ...new Set(
+        items.filter((i) => i.group === groupId).map((i) => i.albumId),
+      ),
+    ];
+    if (!albumIds.length) return;
+    const seedKey = seedKeyOf(albumIds);
+    setRecommendations((r) => ({
+      ...r,
+      [groupId]: {
+        ...(r[groupId] ?? { results: [], reason: null, seedKey }),
+        status: 'loading',
+      },
+    }));
+    try {
+      const response = await fetch('/api/recommendations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ album_ids: albumIds }),
+      });
+      if (!response.ok) throw new Error();
+      const data = (await response.json()) as {
+        results: Recommendation[];
+        reason: string | null;
+      };
+      setRecommendations((r) => ({
+        ...r,
+        [groupId]: {
+          status: 'ready',
+          results: data.results,
+          reason: data.reason,
+          seedKey,
+        },
+      }));
+    } catch {
+      setRecommendations((r) => ({
+        ...r,
+        [groupId]: {
+          ...(r[groupId] ?? { results: [], reason: null, seedKey }),
+          status: 'error',
+        },
+      }));
+    }
+  }
   async function search(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
@@ -221,6 +289,11 @@ export default function Home() {
     return () => lifecycle.abort();
   }, []);
   const group = groups.find((g) => g.id === activeGroup);
+  const groupSeedKey = group
+    ? seedKeyOf(items.filter((i) => i.group === group.id).map((i) => i.albumId))
+    : '';
+  const groupRecs = group ? recommendations[group.id] : undefined;
+  const recsStale = !!groupRecs && groupRecs.seedKey !== groupSeedKey;
   function begin(e: React.PointerEvent, item: Item, resize?: string) {
     if ((e.target as HTMLElement).closest('button') && !resize) return;
     e.stopPropagation();
@@ -294,7 +367,10 @@ export default function Home() {
           <h1>UNTITLED SANDBOX</h1>
           <span className="session-dot" title="Session workspace" />
         </div>
-        <button className="primary search-button" onClick={() => setPanel('search')}>
+        <button
+          className="primary search-button"
+          onClick={() => setPanel('search')}
+        >
           <Search size={17} />
           <span>SEARCH ALBUMS</span>
         </button>
@@ -734,7 +810,10 @@ export default function Home() {
                         setPanel(null);
                       }}
                     >
-                      <img src={r.cover_art_url ?? '/album-placeholder.svg'} alt="" />
+                      <img
+                        src={r.cover_art_url ?? '/album-placeholder.svg'}
+                        alt=""
+                      />
                       <span>
                         <strong>{r.title}</strong>
                         <small>
@@ -791,6 +870,7 @@ export default function Home() {
                 <RadioGroup
                   className="popularity-options"
                   value={group.popularity}
+                  disabled
                   onValueChange={(value) =>
                     setGroups((gs) =>
                       gs.map((g) =>
@@ -814,14 +894,81 @@ export default function Home() {
                     </label>
                   ))}
                 </RadioGroup>
-                <div className="prototype-note">
-                  <span>DESIGN PREVIEW</span>
-                  <p>
-                    Your group and direction are ready. Album recommendations
-                    will appear here when the recommendation engine is
-                    connected.
-                  </p>
+                <p className="rec-note">
+                  Coming soon — popularity data is still being collected.
+                </p>
+                <div className="control-heading">
+                  <h3>RECOMMENDATIONS</h3>
+                  <span>02 / RESULTS</span>
                 </div>
+                {recsStale && groupRecs?.status !== 'loading' && (
+                  <p className="rec-note">
+                    Group changed. These results are for its earlier albums.
+                  </p>
+                )}
+                <button
+                  className="primary find-button"
+                  disabled={!groupSeedKey || groupRecs?.status === 'loading'}
+                  onClick={() => void findRecommendations(group.id)}
+                >
+                  {groupRecs?.status === 'loading' ? (
+                    <>
+                      <Spinner /> FINDING RECOMMENDATIONS…
+                    </>
+                  ) : recsStale ? (
+                    'UPDATE RECOMMENDATIONS'
+                  ) : (
+                    'FIND RECOMMENDATIONS'
+                  )}
+                </button>
+                {groupRecs?.status === 'error' && (
+                  <p className="rec-note" role="alert">
+                    Recommendations are unavailable. Try again.
+                  </p>
+                )}
+                {groupRecs?.status === 'ready' && !groupRecs.results.length && (
+                  <p className="rec-note">
+                    {groupRecs.reason === 'seeds_have_no_terms'
+                      ? 'No related albums found — these albums have few genres or tags in the catalog.'
+                      : 'No related albums found.'}
+                  </p>
+                )}
+                {!!groupRecs?.results.length && (
+                  <div className="rec-results">
+                    {groupRecs.results.map((r) => (
+                      <div className="rec-result" key={r.id}>
+                        <img
+                          src={r.cover_art_url ?? '/album-placeholder.svg'}
+                          alt=""
+                        />
+                        <span>
+                          <strong>{r.title}</strong>
+                          <small>
+                            {r.artist_name ?? 'Unknown artist'}
+                            {r.release_year ? ` / ${r.release_year}` : ''}
+                          </small>
+                          <small className="rec-terms">
+                            Shares: {r.shared_terms.join(', ')}
+                          </small>
+                        </span>
+                        <button
+                          aria-label={`Add ${r.title} to sandbox`}
+                          title="Add to sandbox"
+                          onClick={() =>
+                            add(
+                              r.id,
+                              r.title,
+                              r.artist_name ?? 'Unknown artist',
+                              r.cover_art_url ?? '/album-placeholder.svg',
+                            )
+                          }
+                        >
+                          <Plus size={18} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <button
                   className="primary done-button"
                   onClick={() => setPanel(null)}

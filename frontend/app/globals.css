@@ -772,21 +772,57 @@ button:hover:not(:disabled) {
   margin-left: auto;
   color: var(--blue);
 }
-.prototype-note {
-  border-top: 1px solid #24439433;
-  margin-top: 12px;
-  padding-top: 18px;
-}
-.prototype-note span {
-  font-family: var(--font-label), monospace;
-  font-size: 10px;
-  color: var(--blue);
-}
-.prototype-note p {
-  font-size: 14px;
-  line-height: 1.7;
+.rec-note {
+  font-size: 13px;
+  line-height: 1.6;
   color: #626457;
   margin-top: 8px;
+}
+.find-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  margin-top: 12px;
+}
+.rec-results {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 12px;
+}
+.rec-result {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid #24439422;
+  padding: 10px 0;
+}
+.rec-result img {
+  width: 58px;
+  height: 58px;
+  object-fit: cover;
+  border: 1px solid #17171733;
+}
+.rec-result > span {
+  flex: 1;
+  min-width: 0;
+}
+.rec-result strong {
+  display: block;
+  font-weight: 500;
+  font-size: 14px;
+}
+.rec-result small {
+  display: block;
+  font-family: var(--font-label), monospace;
+  font-size: 11px;
+  color: #676858;
+  margin-top: 5px;
+}
+.rec-result .rec-terms {
+  color: var(--blue);
 }
 .done-button {
   padding: 14px;
