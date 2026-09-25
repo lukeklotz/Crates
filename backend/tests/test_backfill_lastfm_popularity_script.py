@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from crate_backend.lastfm import client as lastfm_client
+from crate_backend.lastfm.client import LastfmKeyRejected
 from crate_backend.models.catalog import Album
 from crate_backend.models.popularity import PopularitySignal
 from crate_backend.scripts import backfill_lastfm_popularity
@@ -122,3 +123,53 @@ async def test_refuses_to_run_without_an_api_key(script, db_session, monkeypatch
     with pytest.raises(SystemExit):
         await backfill_lastfm_popularity.backfill()
     assert script["synced"] == []
+
+
+class _Signal:
+    def __init__(self, fetched: bool):
+        self.lastfm_fetched_at = datetime.now(UTC) if fetched else None
+
+
+async def test_aborts_after_consecutive_failed_lookups(script, db_session, monkeypatch):
+    await _album(db_session)
+
+    async def always_failing(session, client, api_key, album):
+        script["synced"].append(album.id)
+        return _Signal(fetched=False)
+
+    monkeypatch.setattr(backfill_lastfm_popularity, "sync_album_popularity", always_failing)
+
+    with pytest.raises(SystemExit):
+        await backfill_lastfm_popularity.backfill()
+    assert len(script["synced"]) == backfill_lastfm_popularity.MAX_CONSECUTIVE_FAILURES
+    assert script["recomputed"] is False
+
+
+async def test_a_success_resets_the_failure_streak(script, db_session, monkeypatch):
+    await _album(db_session)
+    limit = backfill_lastfm_popularity.MAX_CONSECUTIVE_FAILURES
+
+    async def mostly_failing(session, client, api_key, album):
+        script["synced"].append(album.id)
+        return _Signal(fetched=len(script["synced"]) % limit == 0)
+
+    monkeypatch.setattr(backfill_lastfm_popularity, "sync_album_popularity", mostly_failing)
+
+    await backfill_lastfm_popularity.backfill()
+
+    assert script["recomputed"] is True
+
+
+async def test_rejected_api_key_stops_the_run(script, db_session, monkeypatch):
+    await _album(db_session)
+
+    async def rejected(session, client, api_key, album):
+        script["synced"].append(album.id)
+        raise LastfmKeyRejected("Invalid API key")
+
+    monkeypatch.setattr(backfill_lastfm_popularity, "sync_album_popularity", rejected)
+
+    with pytest.raises(SystemExit):
+        await backfill_lastfm_popularity.backfill()
+    assert len(script["synced"]) == 1
+    assert script["recomputed"] is False

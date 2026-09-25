@@ -52,8 +52,8 @@ async def test_found_album_returns_listeners_artist_and_title(sleeps):
     assert params["album"] == "Kid A"
 
 
-async def test_error_body_means_not_found_without_retrying(sleeps):
-    ac, requests = _client([httpx.Response(200, json={"error": 6, "message": "Album not found"})])
+async def test_album_not_found_error_means_not_found_without_retrying(sleeps):
+    ac, requests = _client([httpx.Response(404, json={"error": 6, "message": "Album not found"})])
     async with ac:
         result = await client.fetch_album_info(ac, "test-key", "Nobody", "Nothing")
     assert result.outcome is client.FetchOutcome.NOT_FOUND
@@ -108,3 +108,59 @@ async def test_backoff_is_capped(monkeypatch, sleeps):
     async with ac:
         await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
     assert max(sleeps) == client.MAX_BACKOFF_SECONDS
+
+
+async def test_invalid_api_key_raises_instead_of_recording_no_match(sleeps):
+    ac, requests = _client([httpx.Response(403, json={"error": 10, "message": "Invalid API key"})])
+    async with ac:
+        with pytest.raises(client.LastfmKeyRejected):
+            await client.fetch_album_info(ac, "bad-key", "Radiohead", "Kid A")
+    assert len(requests) == 1
+
+
+async def test_suspended_api_key_in_a_200_body_raises(sleeps):
+    ac, _ = _client([httpx.Response(200, json={"error": 26, "message": "Suspended API key"})])
+    async with ac:
+        with pytest.raises(client.LastfmKeyRejected):
+            await client.fetch_album_info(ac, "bad-key", "Radiohead", "Kid A")
+
+
+async def test_temporary_error_body_is_retried(sleeps):
+    ac, requests = _client(
+        [httpx.Response(200, json={"error": 16, "message": "Temporary error"}), _found_response()]
+    )
+    async with ac:
+        result = await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
+    assert result.outcome is client.FetchOutcome.FOUND
+    assert len(requests) == 2
+    assert sleeps == [1.0]
+
+
+async def test_rate_limit_error_body_gives_up_as_failed(sleeps):
+    ac, _ = _client([httpx.Response(200, json={"error": 29, "message": "Rate limit exceeded"})])
+    async with ac:
+        result = await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+
+
+async def test_unrecognized_body_is_failed_not_a_definitive_no_match(sleeps):
+    ac, _ = _client([httpx.Response(200, json={})])
+    async with ac:
+        result = await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+
+
+async def test_non_json_body_is_failed_not_a_definitive_no_match(sleeps):
+    ac, _ = _client([httpx.Response(200, text="<html>maintenance</html>")])
+    async with ac:
+        result = await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+
+
+async def test_non_string_artist_is_not_found_instead_of_crashing(sleeps):
+    ac, _ = _client(
+        [httpx.Response(200, json={"album": {"name": "Kid A", "artist": {"name": "Radiohead"}, "listeners": "5"}})]
+    )
+    async with ac:
+        result = await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
+    assert result.outcome is client.FetchOutcome.NOT_FOUND

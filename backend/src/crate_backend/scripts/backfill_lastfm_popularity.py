@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from crate_backend.core.config import get_settings
 from crate_backend.db.session import async_session_factory
-from crate_backend.lastfm.client import REQUEST_INTERVAL_SECONDS
+from crate_backend.lastfm.client import REQUEST_INTERVAL_SECONDS, LastfmKeyRejected
 from crate_backend.lastfm.ingest import sync_album_popularity
 from crate_backend.lastfm.scoring import recompute_popularity_scores
 from crate_backend.models.catalog import Album
@@ -24,6 +24,9 @@ from crate_backend.models.popularity import PopularitySignal
 
 _PROGRESS_EVERY = 500
 _COMMIT_EVERY = 50
+# Each failed lookup already spent ~30s retrying; this many in a row means
+# Last.fm is down or blocking us, so stop instead of hammering it for days.
+MAX_CONSECUTIVE_FAILURES = 10
 
 # Module-level so tests can replace waiting without patching asyncio globally.
 _sleep = asyncio.sleep
@@ -48,9 +51,24 @@ async def backfill(request_interval_seconds: float = REQUEST_INTERVAL_SECONDS) -
         total = len(albums)
         print(f"Looking up {total} albums on Last.fm...")
 
+        failure_streak = 0
         async with httpx.AsyncClient(timeout=30) as client:
             for index, album in enumerate(albums, start=1):
-                await sync_album_popularity(session, client, api_key, album)
+                try:
+                    signal = await sync_album_popularity(session, client, api_key, album)
+                except LastfmKeyRejected as exc:
+                    await session.commit()
+                    raise SystemExit(f"Last.fm rejected the API key ({exc}); stopping.") from exc
+                if signal is not None and signal.lastfm_fetched_at is None:
+                    failure_streak += 1
+                    if failure_streak >= MAX_CONSECUTIVE_FAILURES:
+                        await session.commit()
+                        raise SystemExit(
+                            f"{failure_streak} lookups in a row failed; Last.fm looks "
+                            "unavailable. Progress is saved; re-run later to resume."
+                        )
+                else:
+                    failure_streak = 0
                 if index % _COMMIT_EVERY == 0:
                     await session.commit()
                 if index % _PROGRESS_EVERY == 0:
