@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     musicbrainz_dump_dir: str = str(_REPO_ROOT / "MusicBrainz")
     musicbrainz_target_catalog_size: int = 25000
 
+    # Last.fm popularity signal (Phase 3). Free key from
+    # https://www.last.fm/api/account/create; the form's homepage/callback
+    # URLs are unused by the read-only endpoints called here.
+    lastfm_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
