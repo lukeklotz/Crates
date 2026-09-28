@@ -126,11 +126,12 @@ async def test_redirected_item_is_answered_under_the_requested_id(sleeps):
     assert titles == {"Q10": "Kid A"}
 
 
-async def test_requested_id_absent_from_a_good_response_is_none(sleeps):
+async def test_requested_id_absent_from_a_good_response_is_left_unresolved(sleeps):
+    # Unexplained silence is not a definitive "no article": retry it next run.
     ac, _ = _client([_entities(_entity("Q1", "Kid A"))])
     async with ac:
         titles = await client.resolve_enwiki_titles(ac, ["Q1", "Q2"])
-    assert titles == {"Q1": "Kid A", "Q2": None}
+    assert titles == {"Q1": "Kid A"}
 
 
 async def test_resolve_retries_503_then_succeeds(sleeps):

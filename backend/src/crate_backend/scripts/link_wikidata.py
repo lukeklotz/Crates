@@ -6,21 +6,26 @@ Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
 Run with: uv run python -m crate_backend.scripts.link_wikidata
 
 Safe to re-run: every catalog album's two link columns are overwritten
-from the dump, so links removed upstream are cleared too.
+from the dump, so links removed upstream are cleared too. Wikipedia text
+fetched for an album whose links changed is discarded, so the next
+backfill_wikipedia_text run fetches it again from the new links.
 """
 
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from crate_backend.core.config import get_settings
 from crate_backend.db.session import async_session_factory
+from crate_backend.models.album_text import WIKIPEDIA_SOURCE, AlbumText
 from crate_backend.models.catalog import Album
 from crate_backend.musicbrainz.dump_reader import stream_jsonl_from_tar
 from crate_backend.wikipedia.links import WikiLinks, parse_wiki_links
 
 _NO_LINKS = WikiLinks()
+# Keeps each DELETE's IN list well under asyncpg's 32,767-parameter limit.
+_DELETE_CHUNK = 5000
 
 
 def _percent(part: int, whole: int) -> str:
@@ -47,10 +52,22 @@ async def link_albums(dump_dir: Path) -> None:
             if record.get("id") in by_mbid:
                 links[record["id"]] = parse_wiki_links(record)
 
+        relinked = []
         for mbid, album in by_mbid.items():
             found = links.get(mbid, _NO_LINKS)
+            if (album.wikidata_id, album.wikipedia_title) != found:
+                relinked.append(album.id)
             album.wikidata_id = found.wikidata_id
             album.wikipedia_title = found.wikipedia_title
+        discarded = 0
+        for start in range(0, len(relinked), _DELETE_CHUNK):
+            result = await session.execute(
+                delete(AlbumText).where(
+                    AlbumText.source == WIKIPEDIA_SOURCE,
+                    AlbumText.album_id.in_(relinked[start : start + _DELETE_CHUNK]),
+                )
+            )
+            discarded += result.rowcount
         await session.commit()
 
     total = len(by_mbid)
@@ -60,7 +77,8 @@ async def link_albums(dump_dir: Path) -> None:
     print(
         f"Linked {total} albums: Wikidata {wikidata}, English Wikipedia {enwiki}, "
         f"either {either} ({_percent(either, total)}); "
-        f"{total - len(links)} not found in the dump."
+        f"{total - len(links)} not found in the dump. {len(relinked)} albums' links "
+        f"changed; discarded {discarded} stored Wikipedia texts for them."
     )
 
 

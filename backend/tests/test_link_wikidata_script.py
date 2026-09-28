@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
+from crate_backend.models.album_text import AlbumText
 from crate_backend.models.catalog import Album
 from crate_backend.scripts import link_wikidata
 
@@ -125,3 +128,47 @@ async def test_albums_without_a_musicbrainz_id_are_left_alone(script, db_session
 
     await db_session.refresh(album)
     assert album.wikidata_id == "Q900000004"
+
+
+async def _fetched_text(db_session, album: Album) -> None:
+    db_session.add(
+        AlbumText(
+            album_id=album.id, source="wikipedia", text="Old article", fetched_at=datetime.now(UTC)
+        )
+    )
+    await db_session.flush()
+
+
+async def _texts(db_session, album: Album) -> list[AlbumText]:
+    return list(
+        await db_session.scalars(select(AlbumText).where(AlbumText.album_id == album.id))
+    )
+
+
+async def test_changed_links_discard_previously_fetched_text(script, db_session):
+    album = await _album(db_session, "test-wiki-both", wikidata_id="Q900000099")
+    await _fetched_text(db_session, album)
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    assert await _texts(db_session, album) == []
+
+
+async def test_removed_links_discard_previously_fetched_text(script, db_session):
+    album = await _album(db_session, "test-wiki-stale", wikipedia_title="Old_Title")
+    await _fetched_text(db_session, album)
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    assert await _texts(db_session, album) == []
+
+
+async def test_unchanged_links_keep_fetched_text(script, db_session):
+    album = await _album(
+        db_session, "test-wiki-both", wikidata_id="Q900000001", wikipedia_title="Test_Album"
+    )
+    await _fetched_text(db_session, album)
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    assert [row.text for row in await _texts(db_session, album)] == ["Old article"]

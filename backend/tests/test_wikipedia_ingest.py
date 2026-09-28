@@ -208,3 +208,15 @@ async def test_overlong_final_title_is_truncated_to_the_column(db_session, fetch
     row = await _sync(db_session, album)
 
     assert len(row.article_title) == 500
+
+
+async def test_redirect_to_a_self_titled_album_article_keeps_text(db_session, fetch_returns):
+    # "Weezer (Blue Album)" strips to "weezer" but describes the album, not the band.
+    fetch_returns(_redirect("Weezer (Blue Album)", "Weezer is the debut album.", revision_id=5))
+    album = await _album(
+        db_session, title="Weezer", artist_name="Weezer", wikipedia_title="Weezer_(1994_album)"
+    )
+
+    row = await _sync(db_session, album)
+
+    assert row.text == "Weezer is the debut album."

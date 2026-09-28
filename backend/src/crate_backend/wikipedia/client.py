@@ -81,8 +81,9 @@ async def resolve_enwiki_titles(
     """Map up to 50 Wikidata ids to their English Wikipedia article titles,
     with None for an item that has no English article or doesn't exist.
 
-    An id missing from the result could not be resolved (retries exhausted
-    or an unrecognized response); callers should retry it later.
+    An id missing from the result could not be resolved (retries exhausted,
+    an unrecognized response, or a response silent about it); callers
+    should retry it later.
     """
     if len(qids) > MAX_WIKIDATA_IDS_PER_REQUEST:
         raise ValueError(f"at most {MAX_WIKIDATA_IDS_PER_REQUEST} ids per request")
@@ -119,8 +120,7 @@ async def resolve_enwiki_titles(
             if isinstance(entity, dict):
                 requested = (entity.get("redirects") or {}).get("from", key)
                 answers[requested] = _sitelink_title(entity)
-        for qid in pending:
-            answers.setdefault(qid, None)
+        # Ids the response is silent about stay unresolved, to be retried.
         return answers
     return answers
 

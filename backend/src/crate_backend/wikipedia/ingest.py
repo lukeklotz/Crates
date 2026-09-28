@@ -15,7 +15,10 @@ from crate_backend.wikipedia.client import ArticleResult, FetchOutcome, fetch_ar
 
 # AlbumText.article_title's column length.
 _MAX_TITLE_LENGTH = 500
-_DISAMBIGUATOR = re.compile(r"\s*\([^)]*\)\s*$")
+_DISAMBIGUATOR = re.compile(r"\s*\(([^)]*)\)\s*$")
+# A parenthetical like "(Blue Album)" or "(1994 album)" names a release, so
+# "Weezer (Blue Album)" is the self-titled album's article, not the band's.
+_RELEASE_WORDS = re.compile(r"\b(?:album|ep|lp|soundtrack|mixtape|record)\b", re.IGNORECASE)
 
 
 async def get_or_create_text(session: AsyncSession, album_id: uuid.UUID) -> AlbumText:
@@ -32,7 +35,10 @@ async def get_or_create_text(session: AsyncSession, album_id: uuid.UUID) -> Albu
 
 
 def _bare(name: str) -> str:
-    return _DISAMBIGUATOR.sub("", name).strip().casefold()
+    match = _DISAMBIGUATOR.search(name)
+    if match and not _RELEASE_WORDS.search(match.group(1)):
+        name = name[: match.start()]
+    return name.strip().casefold()
 
 
 def _redirected_to_artist(album: Album, result: ArticleResult) -> bool:
