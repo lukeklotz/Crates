@@ -1,0 +1,2196 @@
+# Wikipedia Text Ingestion (Phase 4, Milestone 1) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Store the full English Wikipedia article text for every catalog album that MusicBrainz links to Wikidata or English Wikipedia. Then report coverage overall and per popularity quartile, the checkpoint before Milestone 2 (the TF-IDF recommender).
+
+**Architecture:** A one-off script streams the MusicBrainz release-group dump and writes `albums.wikidata_id` / `albums.wikipedia_title`. A second, resumable backfill script works in two steps. First it resolves Wikidata ids to English article titles, 50 per request. Then it fetches each article's plain text, one per request at about 4 requests/second, into a new `album_texts` table. The fetcher, ingest logic and backfill script mirror the Last.fm popularity pipeline (`lastfm/client.py`, `lastfm/ingest.py`, `scripts/backfill_lastfm_popularity.py`): same retry/backoff constants, `_sleep` injection, commit cadence and failure-streak safety net.
+
+**Tech Stack:** Python 3.12+, SQLAlchemy 2 async + asyncpg, Alembic, httpx, pytest + pytest-asyncio (auto mode), uv.
+
+**Spec:** `docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md`, section "Milestone 1 — Wikipedia text ingestion". This plan implements only Milestone 1. Milestones 2 and 3 get their own plans after the checkpoint.
+
+## Global Constraints
+
+- All commands run from `backend/` (`cd backend`) with `uv run ...`. Tests need the local Postgres from `.env` (`CRATE_DATABASE_URL`); the `db_session` fixture rolls back every test.
+- The dev database holds the real 25,000-album catalog. Tests must create their own albums and assert on those albums' membership. They must never depend on how many real albums exist or on what state those albums are in (see Task 1 for a test that broke this way).
+- `albums.wikidata_id` is `String(20)`; `albums.wikipedia_title` is `String(500)`; both nullable.
+- `album_texts` columns: `album_id` FK → albums.id, `source` `String(20)` (`"wikipedia"`), `article_title` `String(500)` nullable, `revision_id` `BigInteger` nullable, `text` `Text` nullable, `fetched_at` timestamptz nullable. Unique on (`album_id`, `source`).
+- `fetched_at` set = definitive answer (article stored, or no article). `fetched_at` null = retry next run.
+- Store the **full** article; no section filtering in this milestone.
+- Retry/backoff constants identical to `lastfm/client.py`: `MAX_RETRIES = 5`, `INITIAL_BACKOFF_SECONDS = 1.0`, `MAX_BACKOFF_SECONDS = 60.0`, retry on HTTP 429/500/502/503/504 and transport errors.
+- `REQUEST_INTERVAL_SECONDS = 0.25`; Wikidata `wbgetentities` takes at most 50 ids per request.
+- Backfill commits every 50 albums, prints progress every 500, stops after 10 consecutive failures (`MAX_CONSECUTIVE_FAILURES = 10`) saying progress is saved.
+- Requests carry a descriptive `User-Agent` with a contact email (Wikimedia User-Agent policy). The email comes from the setting `CRATE_WIKIMEDIA_CONTACT_EMAIL` and is never hard-coded.
+- Wikipedia text is CC BY-SA: used only as model features in this phase, never displayed.
+- Ruff: line length 100 (`uv run ruff check src tests`).
+- Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Work directly on `main`; don't push.
+
+## Review Focus
+
+1. **One nonexistent Wikidata id in a batch.** Wikidata rejects the *entire* 50-id request with `{"error": {"code": "no-such-entity", "id": "Q…"}}` (verified live 2026-09-28). Expected: that id is answered as "no article" and the other ids in the batch still resolve. Pinned in Task 5.
+2. **A direct Wikipedia link that redirects to the artist's article.** Minor albums' Wikipedia links often redirect to the band's page. Expected: the artist's biography is *not* stored as the album's text. Pinned in Task 6.
+3. **Wikimedia serving an HTML maintenance page or an unexpected JSON shape.** Expected: the album is FAILED and retried next run, never recorded as "no article". Pinned in Task 5.
+4. **Wikipedia URLs with percent-encoding, a `#Section` fragment, the mobile host, or `http://`.** Expected: the correct plain title (`Sgt._Pepper's_Lonely_Hearts_Club_Band`), with the fragment dropped. Pinned in Task 3.
+5. **Re-running `link_wikidata` after MusicBrainz removes a link.** Expected: the stale id/title is cleared, not kept. Pinned in Task 4.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `backend/src/crate_backend/models/catalog.py` (modify) | `Album.wikidata_id`, `Album.wikipedia_title` |
+| `backend/src/crate_backend/models/album_text.py` (create) | `AlbumText` model, `WIKIPEDIA_SOURCE` constant |
+| `backend/src/crate_backend/models/__init__.py` (modify) | register `AlbumText` |
+| `backend/migrations/versions/<rev>_add_wikipedia_links_and_album_texts.py` (create, autogenerated) | schema change |
+| `backend/src/crate_backend/wikipedia/__init__.py` (create) | package marker |
+| `backend/src/crate_backend/wikipedia/links.py` (create) | parse a dump record's relations → `WikiLinks` |
+| `backend/src/crate_backend/wikipedia/client.py` (create) | Wikidata title resolution + Wikipedia article fetch, retry/backoff |
+| `backend/src/crate_backend/wikipedia/ingest.py` (create) | one album: choose title → fetch → upsert `AlbumText` |
+| `backend/src/crate_backend/scripts/link_wikidata.py` (create) | dump → album link columns |
+| `backend/src/crate_backend/scripts/backfill_wikipedia_text.py` (create) | resumable fetch loop + coverage report |
+| `backend/src/crate_backend/core/config.py`, `backend/.env.example` (modify) | `wikimedia_contact_email` setting |
+| `docs/recommendation-systems.md` (modify) | record the Wikipedia text source |
+
+Tests: `tests/test_models.py` (modify), `tests/test_wikipedia_links.py`, `tests/test_link_wikidata_script.py`, `tests/test_wikipedia_client.py`, `tests/test_wikipedia_ingest.py`, `tests/test_backfill_wikipedia_text_script.py` (create), `tests/test_backfill_lastfm_popularity_script.py` (fix).
+
+---
+
+### Task 1: Make the Last.fm abort test independent of dev-database state
+
+The suite is currently red. `test_aborts_after_consecutive_failed_lookups` creates one album and expects 10 consecutive failures. It used to pass only because the dev database held thousands of albums that hadn't been looked up yet. Now that the real backfill has run, only the test's own album is pending, so the run never aborts. The new backfill tests copy this test's pattern, so fix it first.
+
+**Files:**
+- Modify: `backend/tests/test_backfill_lastfm_popularity_script.py` (the `test_aborts_after_consecutive_failed_lookups` test)
+
+**Interfaces:**
+- Consumes: `backfill_lastfm_popularity.MAX_CONSECUTIVE_FAILURES`, the file's `_album` helper.
+- Produces: nothing new.
+
+- [ ] **Step 1: Confirm the failure**
+
+Run: `cd backend && uv run pytest tests/test_backfill_lastfm_popularity_script.py -q`
+Expected: `1 failed, 8 passed`, with `Failed: DID NOT RAISE SystemExit` in `test_aborts_after_consecutive_failed_lookups`.
+
+- [ ] **Step 2: Create enough albums for the streak**
+
+Replace the first line of the test body (`await _album(db_session)`) so the test reads:
+
+```python
+async def test_aborts_after_consecutive_failed_lookups(script, db_session, monkeypatch):
+    # Enough albums of our own to fill the streak, whatever the dev DB holds.
+    for _ in range(backfill_lastfm_popularity.MAX_CONSECUTIVE_FAILURES):
+        await _album(db_session)
+
+    async def always_failing(session, client, api_key, album):
+        script["synced"].append(album.id)
+        return _Signal(fetched=False)
+
+    monkeypatch.setattr(backfill_lastfm_popularity, "sync_album_popularity", always_failing)
+
+    with pytest.raises(SystemExit):
+        await backfill_lastfm_popularity.backfill()
+    assert len(script["synced"]) == backfill_lastfm_popularity.MAX_CONSECUTIVE_FAILURES
+    assert script["recomputed"] is False
+```
+
+- [ ] **Step 3: Run the full suite**
+
+Run: `cd backend && uv run pytest -q`
+Expected: all pass (131 passed).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add backend/tests/test_backfill_lastfm_popularity_script.py
+git commit -m "test: make Last.fm abort test create its own failing albums
+
+It relied on the dev DB holding thousands of unattempted albums, which
+stopped being true once the real backfill ran.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 2: Schema for album links and article text
+
+**Files:**
+- Modify: `backend/src/crate_backend/models/catalog.py` (the `Album` class, after `popularity`)
+- Create: `backend/src/crate_backend/models/album_text.py`
+- Modify: `backend/src/crate_backend/models/__init__.py`
+- Create: `backend/migrations/versions/<rev>_add_wikipedia_links_and_album_texts.py` (autogenerated)
+- Test: `backend/tests/test_models.py`
+
+**Interfaces:**
+- Consumes: `Base`, `UUIDPkMixin`, `TimestampMixin`.
+- Produces: `Album.wikidata_id: str | None`, `Album.wikipedia_title: str | None`; `crate_backend.models.album_text.AlbumText` with fields `album_id`, `source`, `article_title`, `revision_id`, `text`, `fetched_at`; constant `WIKIPEDIA_SOURCE = "wikipedia"`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `backend/tests/test_models.py`:
+
+```python
+async def test_album_wiki_links_default_to_null(db_session):
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.commit()
+    await db_session.refresh(album)
+
+    assert album.wikidata_id is None
+    assert album.wikipedia_title is None
+
+
+async def test_album_text_defaults_and_relationship(db_session):
+    from crate_backend.models.album_text import WIKIPEDIA_SOURCE, AlbumText
+
+    album = Album(title="Test Album", artist_name="Test Artist", wikidata_id="Q24965303")
+    db_session.add(album)
+    await db_session.flush()
+
+    row = AlbumText(album_id=album.id, source=WIKIPEDIA_SOURCE)
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    assert row.source == "wikipedia"
+    assert row.article_title is None
+    assert row.revision_id is None
+    assert row.text is None
+    assert row.fetched_at is None
+    assert row.album_id == album.id
+
+
+async def test_album_text_is_unique_per_album_and_source(db_session):
+    from crate_backend.models.album_text import AlbumText
+
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            AlbumText(album_id=album.id, source="wikipedia"),
+            AlbumText(album_id=album.id, source="wikipedia"),
+        ]
+    )
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+async def test_album_text_revision_id_exceeds_32_bits(db_session):
+    # Wikipedia revision ids are already past 1.3 billion; int32 tops out at 2.1 billion.
+    from crate_backend.models.album_text import AlbumText
+
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.flush()
+    row = AlbumText(album_id=album.id, source="wikipedia", revision_id=5_000_000_000)
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    assert row.revision_id == 5_000_000_000
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_models.py -q -k "wiki or album_text"`
+Expected: FAIL: `TypeError: 'wikidata_id' is an invalid keyword argument for Album` and `ModuleNotFoundError: No module named 'crate_backend.models.album_text'`.
+
+- [ ] **Step 3: Add the Album columns**
+
+In `backend/src/crate_backend/models/catalog.py`, add directly after the `popularity` column in `Album`:
+
+```python
+    # Links from the MusicBrainz dump (Phase 4), written by
+    # scripts/link_wikidata.py. wikipedia_title is a direct English
+    # Wikipedia link, used when Wikidata has no English article.
+    wikidata_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    wikipedia_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+```
+
+- [ ] **Step 4: Create the AlbumText model**
+
+Create `backend/src/crate_backend/models/album_text.py`:
+
+```python
+import uuid
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from crate_backend.db.base import Base
+from crate_backend.models.mixins import TimestampMixin, UUIDPkMixin
+
+if TYPE_CHECKING:
+    from crate_backend.models.catalog import Album
+
+WIKIPEDIA_SOURCE = "wikipedia"
+
+
+class AlbumText(UUIDPkMixin, TimestampMixin, Base):
+    """Descriptive text about one album from one outside source. Stored in
+    full so model builds can choose which sections to use without
+    re-fetching. Wikipedia text is CC BY-SA: used as model features only,
+    never displayed without attribution."""
+
+    __tablename__ = "album_texts"
+
+    album_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("albums.id"), index=True)
+    source: Mapped[str] = mapped_column(String(20))
+
+    article_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # The revision fetched, so a model build can be reproduced.
+    revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Plain text with "== Section ==" headings; null means no usable article.
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set on any definitive answer (article, or no article); left null when
+    # retries are exhausted so the next backfill run retries the album.
+    fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    album: Mapped["Album"] = relationship()
+
+    __table_args__ = (UniqueConstraint("album_id", "source"),)
+```
+
+- [ ] **Step 5: Register the model**
+
+In `backend/src/crate_backend/models/__init__.py`, add the import (alphabetical, before `artist_relationship`):
+
+```python
+from crate_backend.models.album_text import AlbumText
+```
+
+and add `"AlbumText",` to `__all__` right after `"AlbumTag",`.
+
+- [ ] **Step 6: Generate and apply the migration**
+
+Run: `cd backend && uv run alembic revision --autogenerate -m "add wikipedia links and album texts"`
+
+Open the generated file in `backend/migrations/versions/`. Check that `down_revision = '2a49002b5f36'`, and that `upgrade()` contains **only**:
+- `op.add_column('albums', sa.Column('wikidata_id', sa.String(length=20), nullable=True))`
+- `op.add_column('albums', sa.Column('wikipedia_title', sa.String(length=500), nullable=True))`
+- `op.create_table('album_texts', ...)` with a `sa.BigInteger()` `revision_id`, `sa.Text()` `text`, FK `fk_album_texts_album_id_albums`, unique constraint `uq_album_texts_album_id` on `['album_id', 'source']`
+- `op.create_index(op.f('ix_album_texts_album_id'), 'album_texts', ['album_id'], unique=False)`
+
+`downgrade()` must reverse exactly those. If autogenerate picked up anything unrelated (drift in other tables), delete those lines.
+
+Run: `cd backend && uv run alembic upgrade head`
+Expected: `Running upgrade 2a49002b5f36 -> <rev>, add wikipedia links and album texts`
+
+- [ ] **Step 7: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_models.py -q`
+Expected: all pass.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add backend/src/crate_backend/models/catalog.py backend/src/crate_backend/models/album_text.py backend/src/crate_backend/models/__init__.py backend/migrations/versions/*_add_wikipedia_links_and_album_texts.py backend/tests/test_models.py
+git commit -m "feat: add album Wikipedia link columns and AlbumText model
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 3: Parse Wikidata and English Wikipedia links from dump relations
+
+Real dump shape (release-group record, verified 2026-09-28):
+
+```json
+{"type": "wikidata", "target-type": "url",
+ "url": {"id": "ef7d…", "resource": "https://www.wikidata.org/wiki/Q24965303"}, …}
+{"type": "wikipedia", "target-type": "url",
+ "url": {"id": "5438…", "resource": "https://en.wikipedia.org/wiki/Rosemary_Clooney_Sings_the_Music_of_Irving_Berlin"}, …}
+{"type": "wikipedia", "target-type": "url",
+ "url": {"id": "a026…", "resource": "https://de.wikipedia.org/wiki/Mittendrin_(Album)"}, …}
+```
+
+**Files:**
+- Create: `backend/src/crate_backend/wikipedia/__init__.py` (empty)
+- Create: `backend/src/crate_backend/wikipedia/links.py`
+- Test: `backend/tests/test_wikipedia_links.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `WikiLinks(NamedTuple)` with `wikidata_id: str | None = None`, `wikipedia_title: str | None = None`; `parse_wiki_links(record: dict[str, Any]) -> WikiLinks`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_wikipedia_links.py`:
+
+```python
+from crate_backend.wikipedia.links import WikiLinks, parse_wiki_links
+
+
+def _relation(rel_type: str, url: str) -> dict:
+    return {"type": rel_type, "target-type": "url", "url": {"id": "x", "resource": url}}
+
+
+def _record(*relations: dict) -> dict:
+    return {"id": "test-rg", "relations": list(relations)}
+
+
+def test_wikidata_relation_gives_the_q_id():
+    links = parse_wiki_links(_record(_relation("wikidata", "https://www.wikidata.org/wiki/Q24965303")))
+    assert links == WikiLinks(wikidata_id="Q24965303", wikipedia_title=None)
+
+
+def test_english_wikipedia_relation_gives_the_title_with_underscores_kept():
+    links = parse_wiki_links(
+        _record(_relation("wikipedia", "https://en.wikipedia.org/wiki/Kid_A"))
+    )
+    assert links == WikiLinks(wikidata_id=None, wikipedia_title="Kid_A")
+
+
+def test_both_relations_are_read():
+    links = parse_wiki_links(
+        _record(
+            _relation("wikidata", "https://www.wikidata.org/wiki/Q1"),
+            _relation("wikipedia", "https://en.wikipedia.org/wiki/Kid_A"),
+        )
+    )
+    assert links == WikiLinks("Q1", "Kid_A")
+
+
+def test_non_english_wikipedia_is_ignored():
+    links = parse_wiki_links(
+        _record(_relation("wikipedia", "https://de.wikipedia.org/wiki/Mittendrin_(Album)"))
+    )
+    assert links == WikiLinks()
+
+
+def test_english_link_after_a_non_english_one_is_still_found():
+    links = parse_wiki_links(
+        _record(
+            _relation("wikipedia", "https://de.wikipedia.org/wiki/Kid_A"),
+            _relation("wikipedia", "https://en.wikipedia.org/wiki/Kid_A"),
+        )
+    )
+    assert links.wikipedia_title == "Kid_A"
+
+
+def test_percent_encoding_is_decoded():
+    links = parse_wiki_links(
+        _record(
+            _relation(
+                "wikipedia",
+                "https://en.wikipedia.org/wiki/Sgt._Pepper%27s_Lonely_Hearts_Club_Band",
+            )
+        )
+    )
+    assert links.wikipedia_title == "Sgt._Pepper's_Lonely_Hearts_Club_Band"
+
+
+def test_fragment_and_query_are_dropped():
+    links = parse_wiki_links(
+        _record(_relation("wikipedia", "https://en.wikipedia.org/wiki/Kid_A?x=1#Reception"))
+    )
+    assert links.wikipedia_title == "Kid_A"
+
+
+def test_mobile_host_and_http_scheme_are_accepted():
+    links = parse_wiki_links(
+        _record(_relation("wikipedia", "http://en.m.wikipedia.org/wiki/Kid_A"))
+    )
+    assert links.wikipedia_title == "Kid_A"
+
+
+def test_wikidata_entity_url_form_is_accepted():
+    links = parse_wiki_links(_record(_relation("wikidata", "http://www.wikidata.org/entity/Q42")))
+    assert links.wikidata_id == "Q42"
+
+
+def test_malformed_wikidata_url_gives_no_id():
+    links = parse_wiki_links(
+        _record(_relation("wikidata", "https://www.wikidata.org/wiki/Special:Search"))
+    )
+    assert links == WikiLinks()
+
+
+def test_other_relation_types_are_ignored():
+    links = parse_wiki_links(_record(_relation("discogs", "https://www.discogs.com/master/1")))
+    assert links == WikiLinks()
+
+
+def test_no_relations_or_null_relations():
+    assert parse_wiki_links({"id": "test-rg"}) == WikiLinks()
+    assert parse_wiki_links({"id": "test-rg", "relations": None}) == WikiLinks()
+
+
+def test_relation_without_a_url_is_skipped():
+    assert parse_wiki_links(_record({"type": "wikidata", "target-type": "url"})) == WikiLinks()
+
+
+def test_title_longer_than_the_column_is_dropped():
+    long_title = "A" * 501
+    links = parse_wiki_links(
+        _record(_relation("wikipedia", f"https://en.wikipedia.org/wiki/{long_title}"))
+    )
+    assert links.wikipedia_title is None
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_wikipedia_links.py -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'crate_backend.wikipedia'`.
+
+- [ ] **Step 3: Implement**
+
+Create an empty `backend/src/crate_backend/wikipedia/__init__.py`, then create `backend/src/crate_backend/wikipedia/links.py`:
+
+```python
+"""Read Wikidata and English Wikipedia links from a MusicBrainz
+release-group record's URL relations."""
+
+import re
+from typing import Any, NamedTuple
+from urllib.parse import unquote, urlsplit
+
+_QID_PATH = re.compile(r"^/(?:wiki|entity)/(Q\d+)$")
+_ENWIKI_HOSTS = frozenset({"en.wikipedia.org", "en.m.wikipedia.org"})
+_WIKI_PATH_PREFIX = "/wiki/"
+# Album.wikipedia_title's column length.
+_MAX_TITLE_LENGTH = 500
+
+
+class WikiLinks(NamedTuple):
+    wikidata_id: str | None = None
+    wikipedia_title: str | None = None
+
+
+def _wikidata_id(url: str) -> str | None:
+    match = _QID_PATH.match(urlsplit(url).path)
+    return match.group(1) if match else None
+
+
+def _enwiki_title(url: str) -> str | None:
+    """The article title from an English Wikipedia URL, percent-decoded with
+    underscores kept (the API accepts them). urlsplit drops ?query and
+    #fragment from the path."""
+    parts = urlsplit(url)
+    if parts.hostname not in _ENWIKI_HOSTS or not parts.path.startswith(_WIKI_PATH_PREFIX):
+        return None
+    title = unquote(parts.path[len(_WIKI_PATH_PREFIX) :])
+    if not title or len(title) > _MAX_TITLE_LENGTH:
+        return None
+    return title
+
+
+def parse_wiki_links(record: dict[str, Any]) -> WikiLinks:
+    """The first Wikidata id and first English Wikipedia title among the
+    record's relations. Non-English Wikipedia links are ignored."""
+    wikidata_id = wikipedia_title = None
+    for relation in record.get("relations") or []:
+        url = (relation.get("url") or {}).get("resource")
+        if not isinstance(url, str):
+            continue
+        if relation.get("type") == "wikidata" and wikidata_id is None:
+            wikidata_id = _wikidata_id(url)
+        elif relation.get("type") == "wikipedia" and wikipedia_title is None:
+            wikipedia_title = _enwiki_title(url)
+    return WikiLinks(wikidata_id, wikipedia_title)
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_wikipedia_links.py -q`
+Expected: 14 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/wikipedia/__init__.py backend/src/crate_backend/wikipedia/links.py backend/tests/test_wikipedia_links.py
+git commit -m "feat: parse Wikidata and English Wikipedia links from dump relations
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 4: `link_wikidata` script
+
+**Files:**
+- Create: `backend/src/crate_backend/scripts/link_wikidata.py`
+- Test: `backend/tests/test_link_wikidata_script.py`
+
+**Interfaces:**
+- Consumes: `parse_wiki_links`, `WikiLinks` (Task 3); `Album.wikidata_id`, `Album.wikipedia_title` (Task 2); `stream_jsonl_from_tar(archive_path: Path, member_name: str)`; `async_session_factory`; `get_settings().musicbrainz_dump_dir`.
+- Produces: `async def link_albums(dump_dir: Path) -> None`; `main()`. Run with `uv run python -m crate_backend.scripts.link_wikidata`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_link_wikidata_script.py`:
+
+```python
+from pathlib import Path
+
+import pytest
+
+from crate_backend.models.catalog import Album
+from crate_backend.scripts import link_wikidata
+
+pytestmark = pytest.mark.asyncio
+
+
+class _SessionFactory:
+    """Stands in for async_session_factory: `async with factory() as s`
+    yields the rollback-wrapped test session instead of a real one."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+def _relation(rel_type: str, url: str) -> dict:
+    return {"type": rel_type, "target-type": "url", "url": {"id": "x", "resource": url}}
+
+
+_RELEASE_GROUPS = [
+    {
+        "id": "test-wiki-both",
+        "relations": [
+            _relation("wikidata", "https://www.wikidata.org/wiki/Q900000001"),
+            _relation("wikipedia", "https://en.wikipedia.org/wiki/Test_Album"),
+        ],
+    },
+    {
+        "id": "test-wiki-german-only",
+        "relations": [_relation("wikipedia", "https://de.wikipedia.org/wiki/Test_Album")],
+    },
+    {"id": "test-wiki-stale", "relations": []},
+    {
+        "id": "test-wiki-not-in-catalog",
+        "relations": [_relation("wikidata", "https://www.wikidata.org/wiki/Q900000009")],
+    },
+]
+
+
+@pytest.fixture
+def script(monkeypatch, db_session):
+    monkeypatch.setattr(link_wikidata, "async_session_factory", _SessionFactory(db_session))
+    streamed: list[tuple[Path, str]] = []
+
+    def fake_stream(archive_path: Path, member_name: str):
+        streamed.append((archive_path, member_name))
+        return iter(_RELEASE_GROUPS)
+
+    monkeypatch.setattr(link_wikidata, "stream_jsonl_from_tar", fake_stream)
+    return streamed
+
+
+async def _album(db_session, mbid: str, **fields) -> Album:
+    album = Album(title="Link Fixture", musicbrainz_release_group_id=mbid, **fields)
+    db_session.add(album)
+    await db_session.flush()
+    return album
+
+
+async def test_reads_the_release_group_dump(script, db_session):
+    await link_wikidata.link_albums(Path("/dumps"))
+
+    assert script == [(Path("/dumps/release-group.tar.xz"), "mbdump/release-group")]
+
+
+async def test_stores_wikidata_id_and_english_title(script, db_session):
+    album = await _album(db_session, "test-wiki-both")
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    await db_session.refresh(album)
+    assert album.wikidata_id == "Q900000001"
+    assert album.wikipedia_title == "Test_Album"
+
+
+async def test_non_english_only_album_gets_no_links(script, db_session):
+    album = await _album(db_session, "test-wiki-german-only")
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    await db_session.refresh(album)
+    assert album.wikidata_id is None
+    assert album.wikipedia_title is None
+
+
+async def test_rerun_clears_links_removed_from_the_dump(script, db_session):
+    album = await _album(
+        db_session, "test-wiki-stale", wikidata_id="Q900000002", wikipedia_title="Old_Title"
+    )
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    await db_session.refresh(album)
+    assert album.wikidata_id is None
+    assert album.wikipedia_title is None
+
+
+async def test_catalog_album_absent_from_the_dump_is_cleared(script, db_session):
+    album = await _album(db_session, "test-wiki-gone", wikidata_id="Q900000003")
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    await db_session.refresh(album)
+    assert album.wikidata_id is None
+
+
+async def test_albums_without_a_musicbrainz_id_are_left_alone(script, db_session):
+    album = Album(title="iTunes Stand-in", wikidata_id="Q900000004")
+    db_session.add(album)
+    await db_session.flush()
+
+    await link_wikidata.link_albums(Path("/unused"))
+
+    await db_session.refresh(album)
+    assert album.wikidata_id == "Q900000004"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_link_wikidata_script.py -q`
+Expected: FAIL with `ImportError: cannot import name 'link_wikidata'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/scripts/link_wikidata.py`:
+
+```python
+"""Record each catalog album's Wikidata id and English Wikipedia title from
+the MusicBrainz release-group dump (Phase 4, Milestone 1).
+
+Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
+
+Run with: uv run python -m crate_backend.scripts.link_wikidata
+
+Safe to re-run: every catalog album's two link columns are overwritten
+from the dump, so links removed upstream are cleared too.
+"""
+
+import asyncio
+from pathlib import Path
+
+from sqlalchemy import select
+
+from crate_backend.core.config import get_settings
+from crate_backend.db.session import async_session_factory
+from crate_backend.models.catalog import Album
+from crate_backend.musicbrainz.dump_reader import stream_jsonl_from_tar
+from crate_backend.wikipedia.links import WikiLinks, parse_wiki_links
+
+_NO_LINKS = WikiLinks()
+
+
+def _percent(part: int, whole: int) -> str:
+    return f"{100 * part / whole:.1f}%" if whole else "n/a"
+
+
+async def link_albums(dump_dir: Path) -> None:
+    async with async_session_factory() as session:
+        albums = (
+            await session.scalars(
+                select(Album).where(Album.musicbrainz_release_group_id.is_not(None))
+            )
+        ).all()
+        by_mbid = {album.musicbrainz_release_group_id: album for album in albums}
+        print(
+            f"Scanning release groups for links to {len(by_mbid)} catalog albums "
+            "(streams the whole dump; takes several minutes)..."
+        )
+
+        links: dict[str, WikiLinks] = {}
+        for record in stream_jsonl_from_tar(
+            dump_dir / "release-group.tar.xz", "mbdump/release-group"
+        ):
+            if record.get("id") in by_mbid:
+                links[record["id"]] = parse_wiki_links(record)
+
+        for mbid, album in by_mbid.items():
+            found = links.get(mbid, _NO_LINKS)
+            album.wikidata_id = found.wikidata_id
+            album.wikipedia_title = found.wikipedia_title
+        await session.commit()
+
+    total = len(by_mbid)
+    wikidata = sum(1 for found in links.values() if found.wikidata_id)
+    enwiki = sum(1 for found in links.values() if found.wikipedia_title)
+    either = sum(1 for found in links.values() if found.wikidata_id or found.wikipedia_title)
+    print(
+        f"Linked {total} albums: Wikidata {wikidata}, English Wikipedia {enwiki}, "
+        f"either {either} ({_percent(either, total)}); "
+        f"{total - len(links)} not found in the dump."
+    )
+
+
+def main() -> None:
+    asyncio.run(link_albums(Path(get_settings().musicbrainz_dump_dir)))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_link_wikidata_script.py -q`
+Expected: 6 passed. (These tests load the real catalog from the dev DB inside a rolled-back transaction, so they take a few seconds.)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/scripts/link_wikidata.py backend/tests/test_link_wikidata_script.py
+git commit -m "feat: add link_wikidata script to record album Wikipedia links
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 5: Wikidata and Wikipedia API client
+
+Real response shapes (verified live 2026-09-28):
+
+- `wbgetentities` found: `{"entities": {"Q24965303": {"type": "item", "id": "Q24965303", "sitelinks": {"enwiki": {"site": "enwiki", "title": "Live at Maybeck Recital Hall, Volume Fifteen", "badges": []}}}}, "success": 1}`
+- No English article: `{"entities": {"Q15074489": {"type": "item", "id": "Q15074489", "sitelinks": {}}}, "success": 1}`
+- One unknown id in the batch: `{"error": {"code": "no-such-entity", "info": "Could not find an entity with the ID \"Q999999999999\".", "id": "Q999999999999", …}}`. **The whole request fails**; no other entities are returned.
+- Deleted item within a batch: `{"id": "Q…", "missing": ""}`. A merged (redirected) item may carry `"redirects": {"from": "<requested>", "to": "<target>"}`.
+- Article found (`formatversion=2`): `{"batchcomplete": true, "query": {"normalized": [...], "pages": [{"pageid": 170770, "ns": 0, "title": "Kid A", "lastrevid": 1376615480, "extract": "Kid A is the fourth studio album…\n\n\n== Background ==\n…", …}]}}`
+- Redirect followed: the same, plus `"redirects": [{"from": "Foo", "to": "Foobar"}]` in `query`.
+- Missing page: `pages: [{"ns": 0, "title": "…", "missing": true, …}]`. Invalid title: `pages: [{"title": "Bar[", "invalid": true, "invalidreason": "…"}]`.
+
+**Files:**
+- Create: `backend/src/crate_backend/wikipedia/client.py`
+- Modify: `backend/src/crate_backend/core/config.py`, `backend/.env.example`
+- Test: `backend/tests/test_wikipedia_client.py`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks.
+- Produces:
+  - Constants `REQUEST_INTERVAL_SECONDS = 0.25`, `MAX_WIKIDATA_IDS_PER_REQUEST = 50`, `MAX_RETRIES`, `INITIAL_BACKOFF_SECONDS`, `MAX_BACKOFF_SECONDS`; module-level `_sleep`.
+  - `user_agent(contact_email: str) -> str`
+  - `FetchOutcome` enum: `FOUND`, `MISSING`, `FAILED`
+  - `ArticleResult(NamedTuple)`: `outcome: FetchOutcome`, `title: str | None = None`, `revision_id: int | None = None`, `text: str | None = None`, `redirected: bool = False`
+  - `async def resolve_enwiki_titles(client: httpx.AsyncClient, qids: list[str]) -> dict[str, str | None]`: at most 50 ids. Value `None` = definitively no English article. **An id absent from the result = unresolved (failed); retry later.**
+  - `async def fetch_article(client: httpx.AsyncClient, title: str) -> ArticleResult`
+  - Setting `Settings.wikimedia_contact_email: str = ""` (env `CRATE_WIKIMEDIA_CONTACT_EMAIL`)
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_wikipedia_client.py`:
+
+```python
+import httpx
+import pytest
+
+from crate_backend.wikipedia import client
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def sleeps(monkeypatch) -> list[float]:
+    recorded: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        recorded.append(seconds)
+
+    monkeypatch.setattr(client, "_sleep", fake_sleep)
+    return recorded
+
+
+def _client(responses: list) -> tuple[httpx.AsyncClient, list[httpx.Request]]:
+    """Client whose transport returns (or raises) `responses` in order,
+    repeating the last one."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        item = responses[min(len(requests), len(responses)) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), requests
+
+
+def _entity(qid: str, title: str | None) -> dict:
+    sitelinks = {"enwiki": {"site": "enwiki", "title": title, "badges": []}} if title else {}
+    return {"type": "item", "id": qid, "sitelinks": sitelinks}
+
+
+def _entities(*entities: dict) -> httpx.Response:
+    return httpx.Response(200, json={"entities": {e["id"]: e for e in entities}, "success": 1})
+
+
+def _page(title: str = "Kid A", extract: str = "Kid A is an album.\n\n\n== Background ==\nText.",
+          revision: int = 1376615480, redirects: list | None = None) -> httpx.Response:
+    query: dict = {"pages": [{"pageid": 170770, "ns": 0, "title": title,
+                              "lastrevid": revision, "extract": extract}]}
+    if redirects is not None:
+        query["redirects"] = redirects
+    return httpx.Response(200, json={"batchcomplete": True, "query": query})
+
+
+# --- user agent -------------------------------------------------------------
+
+def test_user_agent_names_the_client_and_contact():
+    agent = client.user_agent("someone@example.test")
+    assert agent.startswith("CrateBackend/")
+    assert "someone@example.test" in agent
+
+
+# --- resolve_enwiki_titles ---------------------------------------------------
+
+async def test_resolves_english_titles_and_sends_one_batched_request(sleeps):
+    ac, requests = _client(
+        [_entities(_entity("Q1", "Kid A"), _entity("Q2", "OK Computer"))]
+    )
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1", "Q2"])
+    assert titles == {"Q1": "Kid A", "Q2": "OK Computer"}
+    assert len(requests) == 1
+    params = requests[0].url.params
+    assert params["action"] == "wbgetentities"
+    assert params["ids"] == "Q1|Q2"
+    assert params["props"] == "sitelinks"
+    assert params["sitefilter"] == "enwiki"
+    assert str(requests[0].url).startswith(client.WIKIDATA_API_URL)
+
+
+async def test_item_without_english_sitelink_is_none(sleeps):
+    ac, _ = _client([_entities(_entity("Q15074489", None))])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q15074489"])
+    assert titles == {"Q15074489": None}
+
+
+async def test_deleted_item_in_a_batch_is_none(sleeps):
+    ac, _ = _client([_entities(_entity("Q1", "Kid A"), {"id": "Q3", "missing": ""})])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1", "Q3"])
+    assert titles == {"Q1": "Kid A", "Q3": None}
+
+
+async def test_unknown_id_is_answered_none_and_the_rest_are_asked_again(sleeps):
+    no_such = httpx.Response(
+        200, json={"error": {"code": "no-such-entity", "id": "Q999999999999",
+                             "info": "Could not find an entity"}}
+    )
+    ac, requests = _client([no_such, _entities(_entity("Q1", "Kid A"))])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1", "Q999999999999"])
+    assert titles == {"Q1": "Kid A", "Q999999999999": None}
+    assert requests[1].url.params["ids"] == "Q1"
+    assert sleeps == []
+
+
+async def test_redirected_item_is_answered_under_the_requested_id(sleeps):
+    merged = {**_entity("Q20", "Kid A"), "redirects": {"from": "Q10", "to": "Q20"}}
+    ac, _ = _client([httpx.Response(200, json={"entities": {"Q20": merged}, "success": 1})])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q10"])
+    assert titles == {"Q10": "Kid A"}
+
+
+async def test_requested_id_absent_from_a_good_response_is_none(sleeps):
+    ac, _ = _client([_entities(_entity("Q1", "Kid A"))])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1", "Q2"])
+    assert titles == {"Q1": "Kid A", "Q2": None}
+
+
+async def test_resolve_retries_503_then_succeeds(sleeps):
+    ac, requests = _client([httpx.Response(503), _entities(_entity("Q1", "Kid A"))])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1"])
+    assert titles == {"Q1": "Kid A"}
+    assert sleeps == [1.0]
+
+
+async def test_resolve_gives_up_with_every_id_unresolved(sleeps):
+    ac, requests = _client([httpx.Response(503)])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1", "Q2"])
+    assert titles == {}
+    assert len(requests) == client.MAX_RETRIES + 1
+    assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+
+async def test_other_api_error_leaves_ids_unresolved(sleeps):
+    ac, _ = _client(
+        [httpx.Response(200, json={"error": {"code": "ratelimited", "info": "slow down"}})]
+    )
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1"])
+    assert titles == {}
+
+
+async def test_html_maintenance_page_leaves_ids_unresolved(sleeps):
+    ac, _ = _client([httpx.Response(200, text="<html>maintenance</html>")])
+    async with ac:
+        titles = await client.resolve_enwiki_titles(ac, ["Q1"])
+    assert titles == {}
+
+
+async def test_more_than_fifty_ids_is_rejected(sleeps):
+    ac, requests = _client([_entities()])
+    async with ac:
+        with pytest.raises(ValueError):
+            await client.resolve_enwiki_titles(ac, [f"Q{i}" for i in range(51)])
+    assert requests == []
+
+
+# --- fetch_article -----------------------------------------------------------
+
+async def test_found_article_returns_text_title_and_revision(sleeps):
+    ac, requests = _client([_page()])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid_A")
+    assert result.outcome is client.FetchOutcome.FOUND
+    assert result.title == "Kid A"
+    assert result.revision_id == 1376615480
+    assert result.text.startswith("Kid A is an album.")
+    assert "== Background ==" in result.text
+    assert result.redirected is False
+    params = requests[0].url.params
+    assert params["titles"] == "Kid_A"
+    assert params["prop"] == "extracts|info"
+    assert params["explaintext"] == "1"
+    assert params["redirects"] == "1"
+    assert params["formatversion"] == "2"
+    assert str(requests[0].url).startswith(client.WIKIPEDIA_API_URL)
+
+
+async def test_followed_redirect_is_reported_with_the_final_title(sleeps):
+    ac, _ = _client([_page(title="Foobar", redirects=[{"from": "Foo", "to": "Foobar"}])])
+    async with ac:
+        result = await client.fetch_article(ac, "Foo")
+    assert result.outcome is client.FetchOutcome.FOUND
+    assert result.title == "Foobar"
+    assert result.redirected is True
+
+
+async def test_missing_page_is_missing(sleeps):
+    ac, requests = _client(
+        [httpx.Response(200, json={"batchcomplete": True, "query": {"pages": [
+            {"ns": 0, "title": "Zzzz no such album qqq", "missing": True}]}})]
+    )
+    async with ac:
+        result = await client.fetch_article(ac, "Zzzz_no_such_album_qqq")
+    assert result.outcome is client.FetchOutcome.MISSING
+    assert len(requests) == 1
+
+
+async def test_invalid_title_is_missing(sleeps):
+    ac, _ = _client(
+        [httpx.Response(200, json={"batchcomplete": True, "query": {"pages": [
+            {"title": "Bar[", "invalid": True, "invalidreason": "invalid characters"}]}})]
+    )
+    async with ac:
+        result = await client.fetch_article(ac, "Bar[")
+    assert result.outcome is client.FetchOutcome.MISSING
+
+
+async def test_blank_extract_is_found_with_no_text(sleeps):
+    ac, _ = _client([_page(extract="  \n")])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FOUND
+    assert result.text is None
+
+
+async def test_page_without_an_extract_is_found_with_no_text(sleeps):
+    ac, _ = _client(
+        [httpx.Response(200, json={"query": {"pages": [
+            {"pageid": 1, "ns": 0, "title": "Kid A", "lastrevid": 5}]}})]
+    )
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FOUND
+    assert result.text is None
+    assert result.revision_id == 5
+
+
+async def test_article_429_is_retried(sleeps):
+    ac, requests = _client([httpx.Response(429), _page()])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FOUND
+    assert len(requests) == 2
+
+
+async def test_article_network_error_is_retried(sleeps):
+    ac, _ = _client([httpx.ConnectError("connection reset"), _page()])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FOUND
+
+
+async def test_article_gives_up_as_failed(sleeps):
+    ac, requests = _client([httpx.Response(502)])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+    assert len(requests) == client.MAX_RETRIES + 1
+
+
+async def test_backoff_is_capped(monkeypatch, sleeps):
+    monkeypatch.setattr(client, "MAX_RETRIES", 8)
+    ac, _ = _client([httpx.Response(503)])
+    async with ac:
+        await client.fetch_article(ac, "Kid A")
+    assert max(sleeps) == client.MAX_BACKOFF_SECONDS
+
+
+async def test_html_maintenance_page_is_failed_not_missing(sleeps):
+    ac, _ = _client([httpx.Response(200, text="<html>maintenance</html>")])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+
+
+async def test_forbidden_is_failed_not_missing(sleeps):
+    # Wikimedia answers 403 to clients whose User-Agent breaks its policy.
+    ac, requests = _client([httpx.Response(403, text="Please set a user-agent")])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+    assert len(requests) == 1
+
+
+async def test_unexpected_json_shape_is_failed(sleeps):
+    ac, _ = _client([httpx.Response(200, json={"batchcomplete": True})])
+    async with ac:
+        result = await client.fetch_article(ac, "Kid A")
+    assert result.outcome is client.FetchOutcome.FAILED
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_wikipedia_client.py -q`
+Expected: FAIL with `ImportError: cannot import name 'client' from 'crate_backend.wikipedia'`.
+
+- [ ] **Step 3: Implement the client**
+
+Create `backend/src/crate_backend/wikipedia/client.py`:
+
+```python
+"""Rate-limited clients for Wikidata (album item -> English article title)
+and English Wikipedia (article plain text), mirroring lastfm/client.py's
+retry/backoff shape and constants."""
+
+import asyncio
+from enum import Enum
+from typing import Any, NamedTuple
+
+import httpx
+
+WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
+WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
+REQUEST_INTERVAL_SECONDS = 0.25
+MAX_WIKIDATA_IDS_PER_REQUEST = 50
+MAX_RETRIES = 5
+INITIAL_BACKOFF_SECONDS = 1.0
+MAX_BACKOFF_SECONDS = 60.0
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Module-level so tests can replace waiting without patching asyncio globally.
+_sleep = asyncio.sleep
+
+
+def user_agent(contact_email: str) -> str:
+    """Wikimedia's User-Agent policy asks API clients to identify themselves
+    and give a way to reach the operator; anonymous clients get blocked."""
+    return f"CrateBackend/0.1 (album recommendation research; {contact_email})"
+
+
+class FetchOutcome(Enum):
+    FOUND = "found"
+    MISSING = "missing"
+    FAILED = "failed"
+
+
+class ArticleResult(NamedTuple):
+    outcome: FetchOutcome
+    title: str | None = None
+    revision_id: int | None = None
+    text: str | None = None
+    redirected: bool = False
+
+
+async def _get_json(
+    client: httpx.AsyncClient, url: str, params: dict[str, str]
+) -> dict[str, Any] | None:
+    """GET with retry/backoff on 429/5xx and network errors. Returns the
+    body as a JSON object, or None when retries run out or the response is
+    anything else (other status, HTML, non-object JSON)."""
+    backoff = INITIAL_BACKOFF_SECONDS
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = await client.get(url, params=params)
+        except httpx.TransportError:
+            response = None
+        if response is not None and response.status_code not in _RETRYABLE_STATUS_CODES:
+            if response.status_code != 200:
+                return None
+            try:
+                body = response.json()
+            except ValueError:
+                return None
+            return body if isinstance(body, dict) else None
+        if attempt < MAX_RETRIES:
+            await _sleep(backoff)
+            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+    return None
+
+
+def _sitelink_title(entity: dict[str, Any]) -> str | None:
+    if "missing" in entity:
+        return None
+    sitelink = (entity.get("sitelinks") or {}).get("enwiki")
+    title = sitelink.get("title") if isinstance(sitelink, dict) else None
+    return title if isinstance(title, str) and title else None
+
+
+async def resolve_enwiki_titles(
+    client: httpx.AsyncClient, qids: list[str]
+) -> dict[str, str | None]:
+    """Map up to 50 Wikidata ids to their English Wikipedia article titles,
+    with None for an item that has no English article or doesn't exist.
+
+    An id missing from the result could not be resolved (retries exhausted
+    or an unrecognized response); callers should retry it later.
+    """
+    if len(qids) > MAX_WIKIDATA_IDS_PER_REQUEST:
+        raise ValueError(f"at most {MAX_WIKIDATA_IDS_PER_REQUEST} ids per request")
+    answers: dict[str, str | None] = {}
+    pending = list(dict.fromkeys(qids))
+    while pending:
+        body = await _get_json(
+            client,
+            WIKIDATA_API_URL,
+            {
+                "action": "wbgetentities",
+                "ids": "|".join(pending),
+                "props": "sitelinks",
+                "sitefilter": "enwiki",
+                "format": "json",
+            },
+        )
+        if body is None:
+            return answers
+        error = body.get("error")
+        if isinstance(error, dict):
+            unknown = error.get("id")
+            if error.get("code") == "no-such-entity" and unknown in pending:
+                # One unknown id rejects the whole request: answer it and
+                # ask again for the rest.
+                answers[unknown] = None
+                pending.remove(unknown)
+                continue
+            return answers
+        entities = body.get("entities")
+        if not isinstance(entities, dict):
+            return answers
+        for key, entity in entities.items():
+            if isinstance(entity, dict):
+                requested = (entity.get("redirects") or {}).get("from", key)
+                answers[requested] = _sitelink_title(entity)
+        for qid in pending:
+            answers.setdefault(qid, None)
+        return answers
+    return answers
+
+
+async def fetch_article(client: httpx.AsyncClient, title: str) -> ArticleResult:
+    """Fetch one English Wikipedia article as plain text with "== Section =="
+    headings, following redirects.
+
+    MISSING is definitive (no such page, or an invalid title). FAILED means
+    retries ran out or the response was unrecognizable; retry later. A page
+    with an empty extract is FOUND with text None.
+    """
+    body = await _get_json(
+        client,
+        WIKIPEDIA_API_URL,
+        {
+            "action": "query",
+            "prop": "extracts|info",
+            "explaintext": "1",
+            "exsectionformat": "wiki",
+            "redirects": "1",
+            "titles": title,
+            "format": "json",
+            "formatversion": "2",
+        },
+    )
+    query = body.get("query") if body else None
+    pages = query.get("pages") if isinstance(query, dict) else None
+    if not isinstance(pages, list) or len(pages) != 1 or not isinstance(pages[0], dict):
+        return ArticleResult(FetchOutcome.FAILED)
+    page = pages[0]
+    if page.get("missing") or page.get("invalid"):
+        return ArticleResult(FetchOutcome.MISSING)
+    final_title = page.get("title")
+    if not isinstance(final_title, str):
+        return ArticleResult(FetchOutcome.FAILED)
+    extract = page.get("extract")
+    revision = page.get("lastrevid")
+    return ArticleResult(
+        FetchOutcome.FOUND,
+        title=final_title,
+        revision_id=revision if isinstance(revision, int) else None,
+        text=extract if isinstance(extract, str) and extract.strip() else None,
+        redirected=bool(query.get("redirects")),
+    )
+```
+
+- [ ] **Step 4: Add the contact-email setting**
+
+In `backend/src/crate_backend/core/config.py`, add after `lastfm_api_key`:
+
+```python
+
+    # Wikidata/Wikipedia text (Phase 4). Wikimedia's User-Agent policy asks
+    # API clients for a contact address; it is sent in every request header.
+    wikimedia_contact_email: str = ""
+```
+
+Append to `backend/.env.example`:
+
+```
+# Contact address sent in the User-Agent to Wikidata/Wikipedia (their policy
+# requires one). Needed by scripts/backfill_wikipedia_text.py.
+CRATE_WIKIMEDIA_CONTACT_EMAIL=
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_wikipedia_client.py tests/test_config.py -q`
+Expected: all pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/src/crate_backend/wikipedia/client.py backend/src/crate_backend/core/config.py backend/.env.example backend/tests/test_wikipedia_client.py
+git commit -m "feat: add Wikidata title resolution and Wikipedia article client
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 6: Per-album ingest (choose title → fetch → upsert AlbumText)
+
+Title choice: Wikidata's English sitelink wins, and MusicBrainz's direct English Wikipedia link is the fallback. If the album's Wikidata id is **unresolved** (absent from the resolution map), nothing is fetched and `fetched_at` stays null. If the final article is reached through a redirect whose target is the artist's own article (or `<artist> discography`), the text is not stored: it describes the artist, not the album.
+
+**Files:**
+- Create: `backend/src/crate_backend/wikipedia/ingest.py`
+- Test: `backend/tests/test_wikipedia_ingest.py`
+
+**Interfaces:**
+- Consumes: `fetch_article`, `ArticleResult`, `FetchOutcome` (Task 5); `AlbumText`, `WIKIPEDIA_SOURCE` (Task 2); `Album.wikidata_id`, `Album.wikipedia_title`, `Album.artist_name`.
+- Produces:
+  - `async def get_or_create_text(session: AsyncSession, album_id: uuid.UUID) -> AlbumText`
+  - `async def sync_album_text(session: AsyncSession, client: httpx.AsyncClient, album: Album, enwiki_titles: dict[str, str | None]) -> AlbumText`. The returned row's `fetched_at is None` means the attempt failed.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_wikipedia_ingest.py`:
+
+```python
+import httpx
+import pytest
+from sqlalchemy import select
+
+from crate_backend.models.album_text import AlbumText
+from crate_backend.models.catalog import Album
+from crate_backend.wikipedia import ingest
+from crate_backend.wikipedia.client import ArticleResult, FetchOutcome
+
+pytestmark = pytest.mark.asyncio
+
+_KID_A = ArticleResult(
+    FetchOutcome.FOUND, title="Kid A", revision_id=1376615480, text="Kid A is an album."
+)
+
+
+@pytest.fixture
+def fetch_returns(monkeypatch):
+    """Make ingest's article fetch return `result`; records each title asked for."""
+    calls: list[str] = []
+
+    def install(result: ArticleResult) -> list[str]:
+        async def fake_fetch(client, title):
+            calls.append(title)
+            return result
+
+        monkeypatch.setattr(ingest, "fetch_article", fake_fetch)
+        return calls
+
+    return install
+
+
+async def _album(db_session, **overrides) -> Album:
+    fields = {"title": "Kid A", "artist_name": "Radiohead"}
+    fields.update(overrides)
+    album = Album(**fields)
+    db_session.add(album)
+    await db_session.flush()
+    return album
+
+
+async def _rows(db_session, album_id) -> list[AlbumText]:
+    return list(await db_session.scalars(select(AlbumText).where(AlbumText.album_id == album_id)))
+
+
+async def _sync(db_session, album, titles=None):
+    return await ingest.sync_album_text(db_session, httpx.AsyncClient(), album, titles or {})
+
+
+async def test_found_article_is_stored_with_fetched_at(db_session, fetch_returns):
+    calls = fetch_returns(_KID_A)
+    album = await _album(db_session, wikidata_id="Q900000001")
+
+    row = await _sync(db_session, album, {"Q900000001": "Kid A"})
+
+    assert calls == ["Kid A"]
+    assert row.source == "wikipedia"
+    assert row.article_title == "Kid A"
+    assert row.revision_id == 1376615480
+    assert row.text == "Kid A is an album."
+    assert row.fetched_at is not None
+
+
+async def test_wikidata_title_is_preferred_over_the_direct_link(db_session, fetch_returns):
+    calls = fetch_returns(_KID_A)
+    album = await _album(db_session, wikidata_id="Q900000001", wikipedia_title="Kid_A_(album)")
+
+    await _sync(db_session, album, {"Q900000001": "Kid A"})
+
+    assert calls == ["Kid A"]
+
+
+async def test_direct_link_is_used_when_wikidata_has_no_english_article(
+    db_session, fetch_returns
+):
+    calls = fetch_returns(_KID_A)
+    album = await _album(db_session, wikidata_id="Q900000001", wikipedia_title="Kid_A")
+
+    await _sync(db_session, album, {"Q900000001": None})
+
+    assert calls == ["Kid_A"]
+
+
+async def test_direct_link_only_album_is_fetched(db_session, fetch_returns):
+    calls = fetch_returns(_KID_A)
+    album = await _album(db_session, wikipedia_title="Kid_A")
+
+    row = await _sync(db_session, album)
+
+    assert calls == ["Kid_A"]
+    assert row.text == "Kid A is an album."
+
+
+async def test_no_english_article_is_recorded_without_a_request(db_session, fetch_returns):
+    calls = fetch_returns(_KID_A)
+    album = await _album(db_session, wikidata_id="Q900000001")
+
+    row = await _sync(db_session, album, {"Q900000001": None})
+
+    assert calls == []
+    assert row.text is None
+    assert row.fetched_at is not None
+
+
+async def test_unresolved_wikidata_id_is_left_for_retry(db_session, fetch_returns):
+    calls = fetch_returns(_KID_A)
+    album = await _album(db_session, wikidata_id="Q900000001", wikipedia_title="Kid_A")
+
+    row = await _sync(db_session, album, {})
+
+    assert calls == []
+    assert row.fetched_at is None
+
+
+async def test_missing_article_is_definitive(db_session, fetch_returns):
+    fetch_returns(ArticleResult(FetchOutcome.MISSING))
+    album = await _album(db_session, wikipedia_title="Gone")
+
+    row = await _sync(db_session, album)
+
+    assert row.text is None
+    assert row.article_title is None
+    assert row.fetched_at is not None
+
+
+async def test_failed_fetch_is_left_for_retry(db_session, fetch_returns):
+    fetch_returns(ArticleResult(FetchOutcome.FAILED))
+    album = await _album(db_session, wikipedia_title="Kid_A")
+
+    row = await _sync(db_session, album)
+
+    assert row.fetched_at is None
+    assert row.text is None
+
+
+async def test_redirect_to_the_artist_article_stores_no_text(db_session, fetch_returns):
+    fetch_returns(
+        ArticleResult(FetchOutcome.FOUND, title="Radiohead", revision_id=1,
+                      text="Radiohead are an English rock band.", redirected=True)
+    )
+    album = await _album(db_session, wikipedia_title="Some_Minor_Album")
+
+    row = await _sync(db_session, album)
+
+    assert row.text is None
+    assert row.revision_id is None
+    assert row.article_title == "Radiohead"
+    assert row.fetched_at is not None
+
+
+async def test_redirect_to_artist_with_disambiguator_or_discography_stores_no_text(
+    db_session, fetch_returns
+):
+    album = await _album(db_session, artist_name="Low", wikipedia_title="Some_EP")
+    for target in ("Low (band)", "Low discography"):
+        fetch_returns(
+            ArticleResult(FetchOutcome.FOUND, title=target, revision_id=1, text="Band text.",
+                          redirected=True)
+        )
+        row = await _sync(db_session, album)
+        assert row.text is None, target
+
+
+async def test_redirect_to_a_differently_named_album_article_keeps_text(
+    db_session, fetch_returns
+):
+    fetch_returns(
+        ArticleResult(FetchOutcome.FOUND, title="Kid A Mnesia", revision_id=2,
+                      text="Kid A Mnesia is a reissue.", redirected=True)
+    )
+    album = await _album(db_session, wikipedia_title="Kid_A_Mnesia_(album)")
+
+    row = await _sync(db_session, album)
+
+    assert row.text == "Kid A Mnesia is a reissue."
+
+
+async def test_article_named_like_the_artist_without_a_redirect_keeps_text(
+    db_session, fetch_returns
+):
+    # Self-titled albums: Wikidata points straight at e.g. "Weezer (Blue Album)"
+    # or, for some, an article that shares the artist's name.
+    fetch_returns(
+        ArticleResult(FetchOutcome.FOUND, title="Radiohead", revision_id=3, text="Album text.")
+    )
+    album = await _album(db_session, wikidata_id="Q900000001")
+
+    row = await _sync(db_session, album, {"Q900000001": "Radiohead"})
+
+    assert row.text == "Album text."
+
+
+async def test_retry_updates_the_existing_row(db_session, fetch_returns):
+    album = await _album(db_session, wikipedia_title="Kid_A")
+    fetch_returns(ArticleResult(FetchOutcome.FAILED))
+    await _sync(db_session, album)
+    fetch_returns(_KID_A)
+
+    await _sync(db_session, album)
+
+    rows = await _rows(db_session, album.id)
+    assert len(rows) == 1
+    assert rows[0].text == "Kid A is an album."
+    assert rows[0].fetched_at is not None
+
+
+async def test_overlong_final_title_is_truncated_to_the_column(db_session, fetch_returns):
+    fetch_returns(ArticleResult(FetchOutcome.FOUND, title="T" * 600, revision_id=4, text="x"))
+    album = await _album(db_session, wikipedia_title="Kid_A")
+
+    row = await _sync(db_session, album)
+
+    assert len(row.article_title) == 500
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_wikipedia_ingest.py -q`
+Expected: FAIL with `ImportError: cannot import name 'ingest' from 'crate_backend.wikipedia'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/wikipedia/ingest.py`:
+
+```python
+"""Idempotent sync of one album's Wikipedia AlbumText row, keyed by
+(album_id, source) so re-runs update in place."""
+
+import re
+import uuid
+from datetime import UTC, datetime
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from crate_backend.models.album_text import WIKIPEDIA_SOURCE, AlbumText
+from crate_backend.models.catalog import Album
+from crate_backend.wikipedia.client import ArticleResult, FetchOutcome, fetch_article
+
+# AlbumText.article_title's column length.
+_MAX_TITLE_LENGTH = 500
+_DISAMBIGUATOR = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+async def get_or_create_text(session: AsyncSession, album_id: uuid.UUID) -> AlbumText:
+    row = await session.scalar(
+        select(AlbumText).where(
+            AlbumText.album_id == album_id, AlbumText.source == WIKIPEDIA_SOURCE
+        )
+    )
+    if row is None:
+        row = AlbumText(album_id=album_id, source=WIKIPEDIA_SOURCE)
+        session.add(row)
+        await session.flush()
+    return row
+
+
+def _bare(name: str) -> str:
+    return _DISAMBIGUATOR.sub("", name).strip().casefold()
+
+
+def _redirected_to_artist(album: Album, result: ArticleResult) -> bool:
+    """Minor albums' Wikipedia links often redirect to the band's article or
+    discography, which would give the album its artist's biography."""
+    if not result.redirected or not album.artist_name or not result.title:
+        return False
+    artist = _bare(album.artist_name)
+    return _bare(result.title) in {artist, f"{artist} discography"}
+
+
+async def sync_album_text(
+    session: AsyncSession,
+    client: httpx.AsyncClient,
+    album: Album,
+    enwiki_titles: dict[str, str | None],
+) -> AlbumText:
+    """Fetch `album`'s English Wikipedia article and record it.
+
+    `enwiki_titles` holds resolve_enwiki_titles answers. Wikidata's English
+    sitelink is preferred over MusicBrainz's direct Wikipedia link. An
+    album whose Wikidata id is absent from `enwiki_titles` (unresolved) is
+    not fetched and keeps fetched_at null, as does a failed fetch.
+    """
+    row = await get_or_create_text(session, album.id)
+    if album.wikidata_id and album.wikidata_id not in enwiki_titles:
+        return row
+
+    title = enwiki_titles.get(album.wikidata_id) if album.wikidata_id else None
+    title = title or album.wikipedia_title
+    result = await fetch_article(client, title) if title else ArticleResult(FetchOutcome.MISSING)
+    if result.outcome is FetchOutcome.FAILED:
+        return row
+
+    row.article_title = result.title[:_MAX_TITLE_LENGTH] if result.title else None
+    if result.outcome is FetchOutcome.FOUND and not _redirected_to_artist(album, result):
+        row.revision_id = result.revision_id
+        row.text = result.text
+    else:
+        row.revision_id = None
+        row.text = None
+    row.fetched_at = datetime.now(UTC)
+    await session.flush()
+    return row
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_wikipedia_ingest.py -q`
+Expected: 15 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/crate_backend/wikipedia/ingest.py backend/tests/test_wikipedia_ingest.py
+git commit -m "feat: sync one album's Wikipedia text into AlbumText
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 7: `backfill_wikipedia_text` script with coverage report
+
+The script resolves every pending Wikidata id first (50 per request), then fetches articles one album at a time. Albums whose Wikidata id stayed unresolved are skipped for this run and reported. They don't count toward the failure streak, because they cost no request. At the end, and on its own with `--report-only`, it prints coverage overall and per popularity quartile (`Album.popularity` is a 0–1 percentile; `None` = no Last.fm match).
+
+**Files:**
+- Create: `backend/src/crate_backend/scripts/backfill_wikipedia_text.py`
+- Test: `backend/tests/test_backfill_wikipedia_text_script.py`
+
+**Interfaces:**
+- Consumes: `resolve_enwiki_titles`, `user_agent`, `REQUEST_INTERVAL_SECONDS`, `MAX_WIKIDATA_IDS_PER_REQUEST` (Task 5); `sync_album_text` (Task 6); `AlbumText`, `WIKIPEDIA_SOURCE` (Task 2); `get_settings().wikimedia_contact_email`.
+- Produces:
+  - `MAX_CONSECUTIVE_FAILURES = 10`, module-level `_sleep`
+  - `class CoverageRow(NamedTuple)`: `label: str`, `albums: int`, `linked: int`, `with_text: int`
+  - `def summarize_coverage(albums: Iterable[tuple[float | None, bool, bool]]) -> list[CoverageRow]`: input tuples are `(popularity, linked, has_text)`. Output order: `All`, `Top 25%`, `50–75%`, `25–50%`, `Bottom 25%`, `No popularity`.
+  - `async def print_coverage(session: AsyncSession) -> None`
+  - `async def backfill(request_interval_seconds: float = REQUEST_INTERVAL_SECONDS) -> None`
+  - `main()` with `--report-only`. Run with `uv run python -m crate_backend.scripts.backfill_wikipedia_text [--report-only]`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `backend/tests/test_backfill_wikipedia_text_script.py`:
+
+```python
+from datetime import UTC, datetime
+
+import pytest
+
+from crate_backend.models.album_text import AlbumText
+from crate_backend.models.catalog import Album
+from crate_backend.scripts import backfill_wikipedia_text
+from crate_backend.scripts.backfill_wikipedia_text import CoverageRow, summarize_coverage
+from crate_backend.wikipedia import client as wikipedia_client
+
+pytestmark = pytest.mark.asyncio
+
+
+class _SessionFactory:
+    """Stands in for async_session_factory: `async with factory() as s`
+    yields the rollback-wrapped test session instead of a real one."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _Settings:
+    wikimedia_contact_email = "someone@example.test"
+
+
+class _Row:
+    def __init__(self, fetched: bool):
+        self.fetched_at = datetime.now(UTC) if fetched else None
+
+
+@pytest.fixture
+def script(monkeypatch, db_session):
+    """The script wired to the test session with Wikimedia faked. The dev DB
+    may hold real linked albums, so tests assert on their own albums'
+    membership, never on exact counts. Test Wikidata ids start with Q9000."""
+    monkeypatch.setattr(
+        backfill_wikipedia_text, "async_session_factory", _SessionFactory(db_session)
+    )
+    monkeypatch.setattr(backfill_wikipedia_text, "get_settings", lambda: _Settings())
+    state = {"synced": [], "sleeps": [], "resolved_batches": [], "unresolvable": set(),
+             "titles_seen": {}}
+
+    async def fake_sleep(seconds):
+        state["sleeps"].append(seconds)
+
+    async def fake_resolve(client, qids):
+        state["resolved_batches"].append(list(qids))
+        return {q: f"Title {q}" for q in qids if q not in state["unresolvable"]}
+
+    async def fake_sync(session, client, album, enwiki_titles):
+        state["synced"].append(album.id)
+        state["titles_seen"][album.id] = enwiki_titles.get(album.wikidata_id)
+        return _Row(fetched=True)
+
+    async def fake_print_coverage(session):
+        state["reported"] = True
+
+    monkeypatch.setattr(backfill_wikipedia_text, "_sleep", fake_sleep)
+    monkeypatch.setattr(backfill_wikipedia_text, "resolve_enwiki_titles", fake_resolve)
+    monkeypatch.setattr(backfill_wikipedia_text, "sync_album_text", fake_sync)
+    monkeypatch.setattr(backfill_wikipedia_text, "print_coverage", fake_print_coverage)
+    return state
+
+
+async def _album(db_session, **fields) -> Album:
+    album = Album(**{"title": "Wiki Backfill Fixture", "artist_name": "Test Artist", **fields})
+    db_session.add(album)
+    await db_session.flush()
+    return album
+
+
+async def test_fetches_unattempted_and_failed_albums_and_skips_done_ones(script, db_session):
+    never_tried = await _album(db_session, wikidata_id="Q900000001")
+    failed_before = await _album(db_session, wikipedia_title="Failed_Before")
+    done = await _album(db_session, wikidata_id="Q900000002")
+    db_session.add_all(
+        [
+            AlbumText(album_id=failed_before.id, source="wikipedia", fetched_at=None),
+            AlbumText(album_id=done.id, source="wikipedia", fetched_at=datetime.now(UTC)),
+        ]
+    )
+    await db_session.flush()
+
+    await backfill_wikipedia_text.backfill()
+
+    assert never_tried.id in script["synced"]
+    assert failed_before.id in script["synced"]
+    assert done.id not in script["synced"]
+
+
+async def test_skips_albums_with_no_links(script, db_session):
+    unlinked = await _album(db_session)
+
+    await backfill_wikipedia_text.backfill()
+
+    assert unlinked.id not in script["synced"]
+
+
+async def test_resolved_titles_are_passed_to_sync(script, db_session):
+    album = await _album(db_session, wikidata_id="Q900000003")
+
+    await backfill_wikipedia_text.backfill()
+
+    assert script["titles_seen"][album.id] == "Title Q900000003"
+
+
+async def test_wikidata_ids_are_resolved_in_batches_of_fifty(script, db_session):
+    await _album(db_session, wikidata_id="Q900000004")
+
+    await backfill_wikipedia_text.backfill()
+
+    assert script["resolved_batches"]
+    assert all(
+        len(batch) <= wikipedia_client.MAX_WIKIDATA_IDS_PER_REQUEST
+        for batch in script["resolved_batches"]
+    )
+    assert any("Q900000004" in batch for batch in script["resolved_batches"])
+
+
+async def test_unresolved_albums_are_skipped_without_counting_as_failures(
+    script, db_session
+):
+    limit = backfill_wikipedia_text.MAX_CONSECUTIVE_FAILURES
+    unresolved = [
+        await _album(db_session, wikidata_id=f"Q9000001{i:02d}") for i in range(limit + 2)
+    ]
+    script["unresolvable"] = {album.wikidata_id for album in unresolved}
+
+    await backfill_wikipedia_text.backfill()
+
+    assert not {album.id for album in unresolved} & set(script["synced"])
+    assert script.get("reported") is True
+
+
+async def test_paces_requests(script, db_session):
+    await _album(db_session, wikidata_id="Q900000005")
+
+    await backfill_wikipedia_text.backfill(request_interval_seconds=2.5)
+
+    assert set(script["sleeps"]) == {2.5}
+    assert len(script["sleeps"]) == len(script["synced"]) + len(script["resolved_batches"])
+
+
+async def test_default_pacing_matches_the_client(script, db_session):
+    await _album(db_session, wikidata_id="Q900000006")
+
+    await backfill_wikipedia_text.backfill()
+
+    assert set(script["sleeps"]) == {wikipedia_client.REQUEST_INTERVAL_SECONDS}
+
+
+async def test_refuses_to_run_without_a_contact_email(script, db_session, monkeypatch):
+    class _NoContact:
+        wikimedia_contact_email = ""
+
+    monkeypatch.setattr(backfill_wikipedia_text, "get_settings", lambda: _NoContact())
+    await _album(db_session, wikidata_id="Q900000007")
+
+    with pytest.raises(SystemExit):
+        await backfill_wikipedia_text.backfill()
+    assert script["synced"] == []
+
+
+async def test_aborts_after_consecutive_failed_fetches(script, db_session, monkeypatch):
+    limit = backfill_wikipedia_text.MAX_CONSECUTIVE_FAILURES
+    for i in range(limit):
+        await _album(db_session, wikipedia_title=f"Failing_{i}")
+
+    async def always_failing(session, client, album, enwiki_titles):
+        script["synced"].append(album.id)
+        return _Row(fetched=False)
+
+    monkeypatch.setattr(backfill_wikipedia_text, "sync_album_text", always_failing)
+
+    with pytest.raises(SystemExit):
+        await backfill_wikipedia_text.backfill()
+    assert len(script["synced"]) == limit
+    assert "reported" not in script
+
+
+async def test_a_success_resets_the_failure_streak(script, db_session, monkeypatch):
+    limit = backfill_wikipedia_text.MAX_CONSECUTIVE_FAILURES
+    for i in range(limit + 5):
+        await _album(db_session, wikipedia_title=f"Flaky_{i}")
+
+    async def mostly_failing(session, client, album, enwiki_titles):
+        script["synced"].append(album.id)
+        return _Row(fetched=len(script["synced"]) % limit == 0)
+
+    monkeypatch.setattr(backfill_wikipedia_text, "sync_album_text", mostly_failing)
+
+    await backfill_wikipedia_text.backfill()
+
+    assert script.get("reported") is True
+
+
+async def test_aborts_when_wikidata_keeps_failing(script, db_session, monkeypatch):
+    limit = backfill_wikipedia_text.MAX_CONSECUTIVE_FAILURES
+    for i in range(limit * wikipedia_client.MAX_WIKIDATA_IDS_PER_REQUEST):
+        await _album(db_session, wikidata_id=f"Q90001{i:04d}")
+
+    async def wikidata_down(client, qids):
+        script["resolved_batches"].append(list(qids))
+        return {}
+
+    monkeypatch.setattr(backfill_wikipedia_text, "resolve_enwiki_titles", wikidata_down)
+
+    with pytest.raises(SystemExit):
+        await backfill_wikipedia_text.backfill()
+    assert len(script["resolved_batches"]) == limit
+    assert script["synced"] == []
+
+
+# --- summarize_coverage (pure) ------------------------------------------------
+
+def test_summarize_coverage_buckets_by_popularity_percentile():
+    rows = summarize_coverage(
+        [
+            (0.9, True, True),
+            (0.75, True, False),
+            (0.6, False, False),
+            (0.3, True, True),
+            (0.1, False, False),
+            (0.0, True, False),
+            (None, True, True),
+        ]
+    )
+    assert rows == [
+        CoverageRow("All", 7, 5, 3),
+        CoverageRow("Top 25%", 2, 2, 1),
+        CoverageRow("50–75%", 1, 0, 0),
+        CoverageRow("25–50%", 1, 1, 1),
+        CoverageRow("Bottom 25%", 2, 1, 0),
+        CoverageRow("No popularity", 1, 1, 1),
+    ]
+
+
+def test_summarize_coverage_of_nothing_is_all_zero():
+    rows = summarize_coverage([])
+    assert rows[0] == CoverageRow("All", 0, 0, 0)
+    assert all(row.albums == 0 for row in rows)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd backend && uv run pytest tests/test_backfill_wikipedia_text_script.py -q`
+Expected: FAIL with `ImportError: cannot import name 'backfill_wikipedia_text'`.
+
+- [ ] **Step 3: Implement**
+
+Create `backend/src/crate_backend/scripts/backfill_wikipedia_text.py`:
+
+```python
+"""Fetch English Wikipedia article text for catalog albums linked to
+Wikidata or Wikipedia (Phase 4, Milestone 1). Run link_wikidata first.
+
+Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
+
+Run with: uv run python -m crate_backend.scripts.backfill_wikipedia_text [--report-only]
+
+Safe to re-run: albums with a definitive answer (fetched_at set) are
+skipped, so an interrupted run resumes where it stopped.
+"""
+
+import argparse
+import asyncio
+from collections.abc import Iterable
+from typing import NamedTuple
+
+import httpx
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from crate_backend.core.config import get_settings
+from crate_backend.db.session import async_session_factory
+from crate_backend.models.album_text import WIKIPEDIA_SOURCE, AlbumText
+from crate_backend.models.catalog import Album
+from crate_backend.wikipedia.client import (
+    MAX_WIKIDATA_IDS_PER_REQUEST,
+    REQUEST_INTERVAL_SECONDS,
+    resolve_enwiki_titles,
+    user_agent,
+)
+from crate_backend.wikipedia.ingest import sync_album_text
+
+_PROGRESS_EVERY = 500
+_COMMIT_EVERY = 50
+# Each failed request already spent ~30s retrying; this many in a row means
+# Wikimedia is down or blocking us, so stop instead of hammering it.
+MAX_CONSECUTIVE_FAILURES = 10
+
+# Module-level so tests can replace waiting without patching asyncio globally.
+_sleep = asyncio.sleep
+
+_LINKED = or_(Album.wikidata_id.is_not(None), Album.wikipedia_title.is_not(None))
+
+
+class CoverageRow(NamedTuple):
+    label: str
+    albums: int
+    linked: int
+    with_text: int
+
+
+_QUARTILES = (("Top 25%", 0.75), ("50–75%", 0.5), ("25–50%", 0.25), ("Bottom 25%", 0.0))
+
+
+def _bucket(popularity: float | None) -> str:
+    if popularity is None:
+        return "No popularity"
+    return next(label for label, floor in _QUARTILES if popularity >= floor)
+
+
+def summarize_coverage(albums: Iterable[tuple[float | None, bool, bool]]) -> list[CoverageRow]:
+    """Count albums, linked albums and albums with stored text, overall and
+    per popularity quartile. Input tuples are (popularity, linked, has_text)."""
+    labels = ["All", *(label for label, _ in _QUARTILES), "No popularity"]
+    counts = {label: [0, 0, 0] for label in labels}
+    for popularity, linked, has_text in albums:
+        for label in ("All", _bucket(popularity)):
+            counts[label][0] += 1
+            counts[label][1] += int(linked)
+            counts[label][2] += int(has_text)
+    return [CoverageRow(label, *counts[label]) for label in labels]
+
+
+def _percent(part: int, whole: int) -> str:
+    return f"{100 * part / whole:.0f}%" if whole else "n/a"
+
+
+async def print_coverage(session: AsyncSession) -> None:
+    rows = (
+        await session.execute(
+            select(Album.popularity, _LINKED, AlbumText.text.is_not(None))
+            .outerjoin(
+                AlbumText,
+                and_(AlbumText.album_id == Album.id, AlbumText.source == WIKIPEDIA_SOURCE),
+            )
+            .where(Album.musicbrainz_release_group_id.is_not(None))
+        )
+    ).all()
+    print(f"{'Popularity':<14}{'Albums':>8}{'Linked':>14}{'With text':>14}")
+    for row in summarize_coverage((pop, bool(linked), bool(text)) for pop, linked, text in rows):
+        print(
+            f"{row.label:<14}{row.albums:>8}"
+            f"{row.linked:>8} ({_percent(row.linked, row.albums):>4})"
+            f"{row.with_text:>8} ({_percent(row.with_text, row.albums):>4})"
+        )
+
+
+async def _pending_albums(session: AsyncSession) -> list[Album]:
+    done = select(AlbumText.album_id).where(
+        AlbumText.source == WIKIPEDIA_SOURCE, AlbumText.fetched_at.is_not(None)
+    )
+    return list(
+        (
+            await session.scalars(
+                select(Album).where(_LINKED, Album.id.not_in(done)).order_by(Album.id)
+            )
+        ).all()
+    )
+
+
+async def _resolve_all(
+    client: httpx.AsyncClient, qids: list[str], request_interval_seconds: float
+) -> dict[str, str | None]:
+    titles: dict[str, str | None] = {}
+    failure_streak = 0
+    for start in range(0, len(qids), MAX_WIKIDATA_IDS_PER_REQUEST):
+        answered = await resolve_enwiki_titles(
+            client, qids[start : start + MAX_WIKIDATA_IDS_PER_REQUEST]
+        )
+        titles.update(answered)
+        failure_streak = 0 if answered else failure_streak + 1
+        if failure_streak >= MAX_CONSECUTIVE_FAILURES:
+            raise SystemExit(
+                f"{failure_streak} Wikidata requests in a row failed; Wikidata looks "
+                "unavailable. Nothing was fetched yet; re-run later."
+            )
+        await _sleep(request_interval_seconds)
+    return titles
+
+
+async def backfill(request_interval_seconds: float = REQUEST_INTERVAL_SECONDS) -> None:
+    contact = get_settings().wikimedia_contact_email
+    if not contact:
+        raise SystemExit(
+            "CRATE_WIKIMEDIA_CONTACT_EMAIL is not set; add it to backend/.env "
+            "(Wikimedia requires a contact address in the User-Agent)."
+        )
+
+    async with async_session_factory() as session:
+        albums = await _pending_albums(session)
+        qids = sorted({album.wikidata_id for album in albums if album.wikidata_id})
+        print(f"Resolving {len(qids)} Wikidata ids for {len(albums)} albums...")
+
+        headers = {"User-Agent": user_agent(contact)}
+        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
+            titles = await _resolve_all(client, qids, request_interval_seconds)
+            ready = [a for a in albums if not a.wikidata_id or a.wikidata_id in titles]
+            print(f"Fetching articles for {len(ready)} albums (about 4 per second)...")
+
+            failure_streak = 0
+            for index, album in enumerate(ready, start=1):
+                row = await sync_album_text(session, client, album, titles)
+                if row.fetched_at is None:
+                    failure_streak += 1
+                    if failure_streak >= MAX_CONSECUTIVE_FAILURES:
+                        await session.commit()
+                        raise SystemExit(
+                            f"{failure_streak} article fetches in a row failed; Wikipedia "
+                            "looks unavailable. Progress is saved; re-run later to resume."
+                        )
+                else:
+                    failure_streak = 0
+                if index % _COMMIT_EVERY == 0:
+                    await session.commit()
+                if index % _PROGRESS_EVERY == 0:
+                    print(f"  fetched {index}/{len(ready)}")
+                await _sleep(request_interval_seconds)
+        await session.commit()
+
+        skipped = len(albums) - len(ready)
+        if skipped:
+            print(f"Skipped {skipped} albums whose Wikidata lookup failed; re-run to retry.")
+        await print_coverage(session)
+
+
+async def report() -> None:
+    async with async_session_factory() as session:
+        await print_coverage(session)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Fetch Wikipedia text for catalog albums.")
+    parser.add_argument(
+        "--report-only", action="store_true", help="Only print coverage; fetch nothing."
+    )
+    args = parser.parse_args()
+    asyncio.run(report() if args.report_only else backfill())
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd backend && uv run pytest tests/test_backfill_wikipedia_text_script.py -q`
+Expected: 14 passed.
+
+- [ ] **Step 5: Run the whole suite and lint**
+
+Run: `cd backend && uv run pytest -q && uv run ruff check src tests`
+Expected: all tests pass; `All checks passed!`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/src/crate_backend/scripts/backfill_wikipedia_text.py backend/tests/test_backfill_wikipedia_text_script.py
+git commit -m "feat: add resumable Wikipedia text backfill with coverage report
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 8: Real run, docs, and checkpoint (owner present)
+
+This task runs against live Wikimedia for about an hour. **Ask the owner before starting the fetch**, and confirm `CRATE_WIKIMEDIA_CONTACT_EMAIL` is set in `backend/.env` (the owner adds it; don't write their email into files yourself).
+
+**Files:**
+- Modify: `docs/recommendation-systems.md` (the "How recommendations work in Crate" bullets)
+
+- [ ] **Step 1: Link albums from the dump**
+
+Run: `cd backend && uv run python -m crate_backend.scripts.link_wikidata`
+Expected: finishes in several minutes with a line like `Linked 25000 albums: Wikidata ~13472, English Wikipedia ~2245, either ~13531 (54.1%); 0 not found in the dump.` A count far from the spec's measured 13,531 means something is wrong; stop and investigate.
+
+- [ ] **Step 2: Run the backfill in the background, logging to a file**
+
+Run: `cd backend && uv run python -m crate_backend.scripts.backfill_wikipedia_text > wikipedia_backfill.log 2>&1`
+(run in background; about 270 Wikidata requests + about 13,500 article requests ≈ 1 hour)
+Expected: progress lines every 500 albums, ending with the coverage table. If it stops with a SystemExit, re-run the same command; it resumes. Delete `backend/wikipedia_backfill.log` once the numbers are recorded; don't commit it.
+
+- [ ] **Step 3: Spot-check stored text**
+
+Run:
+
+```bash
+cd backend && uv run python -c "
+import asyncio
+from sqlalchemy import select, func
+from crate_backend.db.session import async_session_factory
+from crate_backend.models.album_text import AlbumText
+from crate_backend.models.catalog import Album
+async def main():
+    async with async_session_factory() as s:
+        n, total = (await s.execute(select(func.count(AlbumText.text), func.sum(func.length(AlbumText.text))))).one()
+        print('rows with text', n, 'total MB', round((total or 0)/1e6, 1))
+        for title, art, text in (await s.execute(select(Album.title, AlbumText.article_title, AlbumText.text).join(AlbumText, AlbumText.album_id == Album.id).where(AlbumText.text.is_not(None)).order_by(func.random()).limit(5))).all():
+            print('-', title, '->', art, '|', text[:120].replace(chr(10), ' '))
+asyncio.run(main())
+"
+```
+
+Expected: about 100 MB total. Each sampled album title matches its article (an album, not an artist or unrelated page).
+
+- [ ] **Step 4: Record the data source in the docs**
+
+In `docs/recommendation-systems.md`, under "How recommendations work in Crate", add this bullet after the **Catalog** bullet, filling in the real numbers from the coverage table and today's date:
+
+```markdown
+- **Wikipedia text (Phase 4):** full English Wikipedia article text for albums that MusicBrainz links to Wikidata or English Wikipedia, stored in `album_texts` (fetched <YYYY-MM-DD>; <N> albums, <P>% of the catalog). Coverage is strongly skewed to popular albums: <top>% of the top popularity quartile vs <bottom>% of the bottom. Text is CC BY-SA and is used only as model features, never displayed. Refresh with `scripts/link_wikidata.py` then `scripts/backfill_wikipedia_text.py`.
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/recommendation-systems.md
+git commit -m "docs: record Wikipedia text source and coverage
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+- [ ] **Step 6: Checkpoint with the owner**
+
+Report the coverage table (overall and per popularity quartile), total text size, the number of skipped/failed albums, and anything odd from the spot-check. Stop here. Milestone 2 (TF-IDF recommender) gets its own plan after the owner reviews these numbers.
