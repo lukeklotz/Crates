@@ -9,6 +9,7 @@ Design specs record *why* an approach was built the way it was. This document re
 Every approach answers the same question: **given the albums in a user's group (the "seeds"), which other albums in the catalog are related to them?**
 
 - **Catalog:** about 25,000 albums, each a MusicBrainz *release group* (one entry per album, not per pressing). The data comes from the 2026-09-23 MusicBrainz snapshot. Each album has MusicBrainz genres (a curated vocabulary) and tags (free-form labels voted on by volunteers), plus artist relationships (band membership, collaborations). Per-album credits (musicians, producers, labels) are **not** available; see Phase 2's status in the project plan.
+- **Wikipedia text (Phase 4):** full English Wikipedia article text for albums that MusicBrainz links to Wikidata or English Wikipedia, stored in `album_texts` (fetched 2026-09-28; 12,799 albums, 51% of the catalog, 79 MB of text). Coverage is strongly skewed to popular albums: 96% of the top popularity quartile vs 9% of the bottom. Links that redirect to the artist's own article or discography (217 albums) are stored as "no text". Text is CC BY-SA and is used only as model features, never displayed. Refresh with `scripts/link_wikidata.py` then `scripts/backfill_wikipedia_text.py`.
 - **Request:** the frontend sends the distinct album IDs in a group to `POST /recommendations`. One seed is enough; groups can have up to 50.
 - **Contract every approach must keep:**
   - Seeds are never recommended back.
