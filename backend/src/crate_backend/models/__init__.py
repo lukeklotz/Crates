@@ -1,6 +1,7 @@
 """Import every model module so Base.metadata is fully populated for
 Alembic autogeneration and for creating tables in tests."""
 
+from crate_backend.models.album_text import AlbumText
 from crate_backend.models.artist_relationship import ArtistRelationship
 from crate_backend.models.catalog import Album, AlbumGenre, AlbumTag, Artist, Genre, Tag
 from crate_backend.models.event import Event
@@ -16,6 +17,7 @@ __all__ = [
     "AlbumGenre",
     "AlbumGroup",
     "AlbumTag",
+    "AlbumText",
     "Artist",
     "ArtistRelationship",
     "CanvasAlbumInstance",

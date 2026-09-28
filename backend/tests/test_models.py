@@ -167,3 +167,65 @@ async def test_popularity_signal_is_unique_per_album(db_session):
 
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+async def test_album_wiki_links_default_to_null(db_session):
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.commit()
+    await db_session.refresh(album)
+
+    assert album.wikidata_id is None
+    assert album.wikipedia_title is None
+
+
+async def test_album_text_defaults_and_relationship(db_session):
+    from crate_backend.models.album_text import WIKIPEDIA_SOURCE, AlbumText
+
+    album = Album(title="Test Album", artist_name="Test Artist", wikidata_id="Q24965303")
+    db_session.add(album)
+    await db_session.flush()
+
+    row = AlbumText(album_id=album.id, source=WIKIPEDIA_SOURCE)
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    assert row.source == "wikipedia"
+    assert row.article_title is None
+    assert row.revision_id is None
+    assert row.text is None
+    assert row.fetched_at is None
+    assert row.album_id == album.id
+
+
+async def test_album_text_is_unique_per_album_and_source(db_session):
+    from crate_backend.models.album_text import AlbumText
+
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            AlbumText(album_id=album.id, source="wikipedia"),
+            AlbumText(album_id=album.id, source="wikipedia"),
+        ]
+    )
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
+async def test_album_text_revision_id_exceeds_32_bits(db_session):
+    # Wikipedia revision ids are already past 1.3 billion; int32 tops out at 2.1 billion.
+    from crate_backend.models.album_text import AlbumText
+
+    album = Album(title="Test Album", artist_name="Test Artist")
+    db_session.add(album)
+    await db_session.flush()
+    row = AlbumText(album_id=album.id, source="wikipedia", revision_id=5_000_000_000)
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    assert row.revision_id == 5_000_000_000

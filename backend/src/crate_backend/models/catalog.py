@@ -62,6 +62,12 @@ class Album(UUIDPkMixin, TimestampMixin, Base):
     # not obscure.
     popularity: Mapped[float | None] = mapped_column(nullable=True)
 
+    # Links from the MusicBrainz dump (Phase 4), written by
+    # scripts/link_wikidata.py. wikipedia_title is a direct English
+    # Wikipedia link, used when Wikidata has no English article.
+    wikidata_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    wikipedia_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     primary_artist: Mapped["Artist | None"] = relationship(back_populates="albums")
     genres: Mapped[list["AlbumGenre"]] = relationship(
         back_populates="album", cascade="all, delete-orphan"
