@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # URLs are unused by the read-only endpoints called here.
     lastfm_api_key: str = ""
 
+    # Wikidata/Wikipedia text (Phase 4). Wikimedia's User-Agent policy asks
+    # API clients for a contact address; it is sent in every request header.
+    wikimedia_contact_email: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
