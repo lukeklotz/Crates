@@ -131,7 +131,9 @@ class _Signal:
 
 
 async def test_aborts_after_consecutive_failed_lookups(script, db_session, monkeypatch):
-    await _album(db_session)
+    # Enough albums of our own to fill the streak, whatever the dev DB holds.
+    for _ in range(backfill_lastfm_popularity.MAX_CONSECUTIVE_FAILURES):
+        await _album(db_session)
 
     async def always_failing(session, client, api_key, album):
         script["synced"].append(album.id)
