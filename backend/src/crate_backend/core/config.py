@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # API clients for a contact address; it is sent in every request header.
     wikimedia_contact_email: str = ""
 
+    # TF-IDF recommender model file (Phase 4), written by
+    # scripts/build_tfidf_model.py and read by the API on first use.
+    tfidf_model_path: str = str(_REPO_ROOT / "models" / "tfidf.joblib")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -8,6 +8,10 @@ __pycache__/
 venv/
 *.egg-info/
 
+# Built recommender models (rebuild with scripts/build_tfidf_model.py)
+/models/*.joblib
+/models/*.tmp
+
 # Terraform (infrastructure)
 .terraform/
 *.tfstate
