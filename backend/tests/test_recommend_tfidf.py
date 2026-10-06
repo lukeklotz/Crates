@@ -1,9 +1,17 @@
 import uuid
+from datetime import datetime
 
 import numpy as np
 import pytest
+import sklearn
 
-from crate_backend.recommend.tfidf import AlbumDoc, build_model, recommend
+from crate_backend.recommend.tfidf import (
+    AlbumDoc,
+    build_model,
+    load_model,
+    recommend,
+    save_model,
+)
 
 # Tiny catalogs can't satisfy the production min_df=2 / max_df=0.5 text
 # pruning, so tests keep every word.
@@ -157,3 +165,93 @@ def test_seeds_missing_from_the_model_are_ignored():
 
     assert [r.album_id for r in recommend(model, [seed.album_id, unknown], 20)] == [other.album_id]
     assert recommend(model, [unknown], 20) == []
+
+
+def test_shared_terms_are_ordered_by_contribution():
+    seed = album("Seed", "rock", "glitch", "idm")
+    candidate = album("Candidate", "rock", "glitch", "idm")
+    model = model_of(
+        seed,
+        candidate,
+        *(album(f"Rock {i}", "rock") for i in range(4)),
+        album("IDM Fan", "idm"),
+    )
+
+    first = recommend(model, [seed.album_id], 20)[0]
+
+    assert first.album_id == candidate.album_id
+    # glitch is on 2 albums, idm on 3, rock on 6: rarer terms contribute more.
+    assert first.shared_terms == ["glitch", "idm", "rock"]
+
+
+def test_explanations_are_capped_at_five_terms():
+    terms = [f"t{i}" for i in range(8)]
+    seed = album("Seed", *terms)
+
+    [result] = recommend(model_of(seed, album("Candidate", *terms)), [seed.album_id], 20)
+
+    # Equal contributions fall back to alphabetical order.
+    assert result.shared_terms == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_shared_text_terms_rank_distinctive_shared_words_first():
+    seed = album("Seed", "jazz", text="modal saxophone saxophone suite")
+    candidate = album("Candidate", "jazz", text="modal saxophone trumpet")
+    model = model_of(
+        seed, candidate, album("Other", "jazz", text="modal piano"), ngram_range=(1, 1)
+    )
+
+    result = next(
+        r for r in recommend(model, [seed.album_id], 20) if r.album_id == candidate.album_id
+    )
+
+    assert result.shared_text_terms == ["saxophone", "modal"]
+
+
+def test_shared_text_terms_empty_when_candidate_has_no_text():
+    seed = album("Seed", "jazz", text="modal saxophone")
+    candidate = album("Candidate", "jazz")
+    model = model_of(seed, candidate, album("Other", "polka", text="modal accordion"))
+
+    result = next(
+        r for r in recommend(model, [seed.album_id], 20) if r.album_id == candidate.album_id
+    )
+
+    assert result.shared_terms == ["jazz"]
+    assert result.shared_text_terms == []
+
+
+def test_saved_model_loads_with_identical_scores(tmp_path):
+    seed = album("Seed", "jazz", "modal", text="spiritual modal saxophone")
+    model = model_of(
+        seed,
+        album("With Text", "jazz", text="modal saxophone suite"),
+        album("Without Text", "modal"),
+    )
+    path = tmp_path / "nested" / "tfidf.joblib"
+
+    save_model(model, path)
+    loaded = load_model(path)
+
+    assert recommend(loaded, [seed.album_id], 20) == recommend(model, [seed.album_id], 20)
+    assert loaded.metadata == model.metadata
+    assert not path.with_suffix(".tmp").exists()
+
+
+def test_metadata_records_how_the_model_was_built():
+    model = build_model(
+        [album("A", "jazz", text="modal saxophone"), album("B", "jazz")],
+        alpha=0.7,
+        min_df=1,
+        max_df=1.0,
+        extra_metadata={"catalog_source": "test dump"},
+    )
+
+    metadata = model.metadata
+    assert metadata["alpha"] == 0.7
+    assert metadata["n_albums"] == 2
+    assert metadata["n_with_text"] == 1
+    assert metadata["catalog_source"] == "test dump"
+    assert metadata["text_vectorizer"]["ngram_range"] == [1, 2]
+    assert metadata["sklearn_version"] == sklearn.__version__
+    datetime.fromisoformat(metadata["model_version"])

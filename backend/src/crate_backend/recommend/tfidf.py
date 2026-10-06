@@ -15,8 +15,10 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import sklearn
 from scipy import sparse
@@ -28,6 +30,7 @@ from sklearn.feature_extraction.text import (
 )
 
 DEFAULT_ALPHA = 0.6
+TOP_TERMS = 5
 
 # Words music writing uses about every album, so they say nothing about
 # what one sounds like. Added to scikit-learn's English stop words.
@@ -161,12 +164,16 @@ def recommend(
         return []
     scores = _group_scores(model, seed_rows, model.metadata["alpha"] if alpha is None else alpha)
     rounded = np.round(scores, 9)
+    tag_seed_weights = _seed_weights(model.tag_matrix, seed_rows)
+    text_seed_weights = _seed_weights(model.text_matrix, seed_rows)
     return [
         TfidfRecommendation(
             album_id=model.album_ids[row],
             score=float(rounded[row]),
-            shared_terms=[],
-            shared_text_terms=[],
+            shared_terms=_top_terms(model.tag_matrix, model.tag_terms, row, tag_seed_weights),
+            shared_text_terms=_top_terms(
+                model.text_matrix, model.text_terms, row, text_seed_weights
+            ),
         )
         for row in _rank(model, rounded, seed_rows, limit)
     ]
@@ -201,3 +208,49 @@ def _rank(model: TfidfModel, rounded: np.ndarray, seed_rows: list[int], limit: i
         key=lambda row: (-rounded[row], model.titles[row], str(model.album_ids[row])),
     )
     return ordered[:limit]
+
+
+def _seed_weights(matrix: sparse.csr_matrix, seed_rows: list[int]) -> np.ndarray:
+    """Each term's weight summed over the seeds (seeds without text add 0)."""
+    return np.asarray(matrix[seed_rows].sum(axis=0)).ravel()
+
+
+def _top_terms(
+    matrix: sparse.csr_matrix, terms: np.ndarray, row: int, seed_weights: np.ndarray
+) -> list[str]:
+    """The album's terms that contribute most to its score: summed seed
+    weight times the album's own weight, highest first, ties alphabetical."""
+    start, end = matrix.indptr[row], matrix.indptr[row + 1]
+    columns = matrix.indices[start:end]
+    contributions = matrix.data[start:end] * seed_weights[columns]
+    ranked = sorted(
+        (-contribution, str(terms[column]))
+        for contribution, column in zip(contributions, columns, strict=True)
+        if contribution > 0
+    )
+    return [term for _, term in ranked[:TOP_TERMS]]
+
+
+def save_model(model: TfidfModel, path: Path) -> None:
+    """Write the model as one joblib file. Written to a temp file and renamed
+    so a process loading the path never sees a half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    joblib.dump(
+        {
+            "album_ids": model.album_ids,
+            "titles": model.titles,
+            "tag_terms": model.tag_terms,
+            "tag_matrix": model.tag_matrix,
+            "text_terms": model.text_terms,
+            "text_matrix": model.text_matrix,
+            "has_text": model.has_text,
+            "metadata": model.metadata,
+        },
+        temp,
+    )
+    temp.replace(path)
+
+
+def load_model(path: Path) -> TfidfModel:
+    return TfidfModel(**joblib.load(path))
