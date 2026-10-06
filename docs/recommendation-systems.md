@@ -23,7 +23,7 @@ Every approach answers the same question: **given the albums in a user's group (
 | # | Approach | Phase | Status | Signal used | Evaluated? |
 |---|---|---|---|---|---|
 | 1 | Genre/tag overlap (Jaccard) | 3 | **Live** since 2026-09-24 | Genre + tag names | No (see [Evaluation](#evaluation)) |
-| 2 | TF-IDF text similarity | 4 | Planned | Genre + tag text, weighted by rarity | — |
+| 2 | TF-IDF text similarity | 4 | **Built** 2026-10-06, opt-in (`approach: "tfidf"`), not the default | Genre/tag votes + Wikipedia text, weighted by rarity | Pending (Phase 4, Milestone 3) |
 | 3 | Semantic embeddings | 5 | Planned | Pretrained text embeddings of album descriptions | — |
 
 ## Evaluation
@@ -74,13 +74,16 @@ The example also shows a limitation: "post bop" and "post-bop" are counted as tw
 
 ```json
 // request
-{ "album_ids": ["<uuid>", "..."], "limit": 20 }
+{ "album_ids": ["<uuid>", "..."], "limit": 20, "approach": "overlap" }
 
 // response
 {
+  "approach": "overlap",
+  "model_version": null,
   "results": [
     { "id": "…", "title": "Impressions", "artist_name": "John Coltrane", "release_year": 1963,
-      "cover_art_url": "…", "score": 0.778, "shared_terms": ["avant-garde jazz", "free jazz", "…"] }
+      "cover_art_url": "…", "score": 0.778, "shared_terms": ["avant-garde jazz", "free jazz", "…"],
+      "shared_text_terms": [] }
   ],
   "reason": null
 }
@@ -88,6 +91,7 @@ The example also shows a limitation: "post bop" and "post-bop" are counted as tw
 
 - `album_ids`: 1–50 IDs. Duplicates are collapsed.
 - `limit`: 1–50, default 20.
+- `approach`: `"overlap"` (default) or `"tfidf"` (approach 2). Overlap responses always have `model_version: null` and empty `shared_text_terms`.
 - `reason`: `"seeds_have_no_terms"` means none of the seeds has any genres or tags. An empty `results` with `reason: null` means the seeds have terms but no other album shares them.
 - Errors: `404` when some IDs aren't in the catalog (the response lists the `missing` IDs); `422` for invalid input.
 - Live schema: http://localhost:8000/docs while the backend is running.
@@ -126,13 +130,89 @@ From the final code review, 2026-09-24. None blocked shipping.
 
 ---
 
+## 2. TF-IDF text similarity
+
+**Status:** Built 2026-10-06. Opt-in with `approach: "tfidf"`; **not** the default. The default changes only if the Milestone 3 answer key says TF-IDF wins.
+**Spec:** `docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md` (Milestone 2); plan `docs/superpowers/plans/2026-10-06-tfidf-recommender.md`.
+**Code:** `backend/src/crate_backend/recommend/text_cleaning.py` (term and article preparation), `recommend/tfidf.py` (model build, scoring, explanations, save/load), `recommend/model_store.py` (per-process model cache), `scripts/build_tfidf_model.py` (build), `api/routes/recommendations.py` (endpoint). The frontend shows `shared_text_terms` as "Described alike: …".
+
+### How it works
+
+Each album gets two rows of weights, called *blocks*. Each row is scaled to length 1, so the dot product of two rows is their cosine similarity (0–1).
+
+1. **Tag block (every album).** Each genre or tag name is one whole term, normalized first: lowercase, `-`/`_` → space, `&` → "and". "Post-Bop" and "post bop" are now one term, which fixes approach 1's duplicate-term problem. Weight = **TF × IDF**:
+   - TF = 1 + ln(votes) (0 votes count as 1), so 10 votes count about 3× one vote, not 10×. When a term appears as both a genre and a tag, the higher vote count is used.
+   - IDF = ln((1 + N) / (1 + albums with the term)) + 1, so rare terms ("spiritual jazz") outweigh common ones ("jazz").
+2. **Text block (albums with a Wikipedia article).** The article is cleaned first. Track listings, charts, certifications, release history, references and similar sections are dropped. Personnel/Credits sections are kept, but only lines with a musical or production role; crew-only lines (mastering, engineering, photography, design…) are dropped. Then words and two-word phrases are counted, after removing English stop words and music-press filler ("album", "released", "billboard"…). Terms in only one article (`min_df=2`) or in over half of them (`max_df=0.5`) are dropped. TF = 1 + ln(count), and IDF is computed over the articles.
+3. **Similarity.** If both albums have text: 0.6 × tag cosine + 0.4 × text cosine. Otherwise: tag cosine alone, so an album without an article is compared on tags, not penalized.
+4. **Groups.** A candidate's score is its similarity to each seed, summed, so every seed has equal influence. Seeds are excluded, and only scores above 0 are returned.
+5. **Order.** Score rounded to 9 decimals (high first), then title, then album ID. Fully deterministic.
+6. **Explanations.** For each result, a term's *contribution* = (its weight summed over the seeds) × (its weight in the result). `shared_terms` lists the top 5 tag terms by contribution, and `shared_text_terms` the top 5 text terms.
+
+### Worked example
+
+Seed: *A Love Supreme* (John Coltrane). Model built 2026-10-06T16:19:44Z.
+
+| # | Result | Score | Article? | Shares | Described alike |
+|---|---|---|---|---|---|
+| 1 | *The 7th Hand* (Immanuel Wilkins) | 0.610 | no | post bop, free jazz, spiritual jazz, jazz | — |
+| 2 | *New York City Philharmonic Hall at Lincoln Center, February 12, 1964* (Miles Davis Quintet) | 0.599 | no | hard bop, post bop, jazz, modal | — |
+| 4 | *"Live" at the Village Vanguard* (John Coltrane) | 0.563 | yes | modal jazz, spiritual jazz, hard bop, jazz, post bop | coltrane, garrison, jimmy garrison, impulse, trane |
+| 6 | *Crescent* (John Coltrane Quartet) | 0.551 | yes | free jazz, hard bop, modal jazz, jazz, post bop | coltrane, garrison, tyner, supreme, love supreme |
+
+Rarity weighting works: "spiritual jazz" now carries *The 7th Hand* and Matthew Halsall's *When the World Was One* into the top 10. The text terms are mostly people: the quartet's members and the Impulse! label, recovered from articles' prose and personnel lists.
+
+### Building the model
+
+```bash
+cd backend && uv run python -m crate_backend.scripts.build_tfidf_model
+```
+
+- **Output:** writes `models/tfidf.joblib` at the repo root (gitignored; override with `CRATE_TFIDF_MODEL_PATH` or `--out`).
+- **Evaluation flags:** `--alpha` (tag weight, 0–1), `--no-bigrams`, `--no-reception`, `--no-personnel`, `--max-features`.
+- **Restarts:** the API loads the file on its first TF-IDF request and keeps it, so **restart the backend after a rebuild**. A first build needs no restart.
+- **Metadata:** the file records its build time (`model_version`), α, vectorizer settings, album counts, the MusicBrainz dump date and the scikit-learn version.
+
+### API
+
+Same endpoint as approach 1, with `"approach": "tfidf"`. The response's `model_version` is the build time of the model that answered, and each result adds `shared_text_terms`.
+
+- `503 {"detail": "TF-IDF model not built"}`: no model file exists. Overlap requests are unaffected.
+- `reason: "seeds_not_in_model"`: none of the seeds existed when the model was built. Seeds added since are ignored when mixed with known ones.
+- 404 / 422 / `seeds_have_no_terms`: as for approach 1.
+- Albums removed from the catalog since the build are skipped.
+
+### Performance
+
+Measured on the dev machine, 2026-10-06, full catalog:
+
+| Measure | Value |
+|---|---|
+| Build (load from Postgres + fit + save) | 25 s total (4.0 + 17.4 + 1.4 s); peak memory 724 MB |
+| Vocabulary | 11,814 tag terms; 630,197 text terms |
+| Nonzeros | 230,318 tag; 6,511,631 text |
+| Model file | 88 MB; matrices 77 MB in memory (~150 MB process growth on load) |
+| First-request load | 0.9 s |
+| Request, 1 seed | 29–39 ms |
+| Request, 5 seeds | 38–43 ms |
+| Request, 50 seeds | 145–159 ms |
+
+That is faster than approach 1 (0.06–1.5 s) because scoring is in-memory sparse matrix math instead of SQL. The 500 MB cap from the spec was not needed.
+
+### Known limitations
+
+- **Albums without an article outrank those with one.** Text cosines run lower than tag cosines, so the 0.6/0.4 blend usually scores an album with an article below one scored on tags alone. In the first by-eye check, 7 of *A Love Supreme*'s top 10 and 6 of *Kid A*'s had no article. The spec chose to measure this in Milestone 3 rather than correct it blind.
+- **Mood tags dominate some seeds.** *Kid A*'s top results come from rare descriptor tags ("cold", "depressive", "cryptic", "winter") shared with depressive black metal and a Turkish album. IDF rewards rarity, and these tags are rare.
+- **Text matches are mostly names.** "Described alike" is dominated by artist and band-member names ("coltrane", "yorke", "radiohead") and a few phrase fragments ("yorke said"). So text favours same-artist and same-circle albums more than shared sound. The artist name is deliberately kept; evaluation will show whether it crowds results.
+- **Coverage is skewed.** Articles exist for 96% of the top popularity quartile but 9% of the bottom, so the text block barely helps obscure albums.
+- **Snapshot.** Albums added after a build can't be seeds or results until the next build, and a rebuild needs an API restart.
+- **Not evaluated.** Quality has only been judged by eye so far.
+
+---
+
 ## Planned approaches
 
 Short notes only; each gets a full section like approach 1 once it's built.
-
-### 2. TF-IDF text similarity (Phase 4)
-
-Each album becomes a short "document" of its terms. TF-IDF (Term Frequency–Inverse Document Frequency) weights each term by how strongly it applies to the album and how *rare* it is across the catalog, so sharing "glitch" counts for more than sharing "rock." Albums are compared by cosine similarity of these weighted vectors. It should fix approach 1's biggest weakness directly. Comparing it fairly requires the evaluation answer key described above.
 
 ### 3. Semantic embeddings (Phase 5)
 
