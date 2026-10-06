@@ -128,7 +128,9 @@ Wikipedia text is CC BY-SA. This phase uses it only as model features and derive
 
 ### Article cleaning (text block)
 
-`clean_article` splits on `==`-level headings and **drops** sections whose normalized heading is one of: track listing, personnel, charts, weekly charts, year-end charts, certifications, release history, references, notes, external links, see also, accolades, awards, sales. Everything else is kept: the lead, Background, Recording, Composition/Music/Style, Themes/Lyrics and **Reception**. Subsections follow their parent section. The drop list is a module constant; the Reception on/off experiment toggles one entry.
+`clean_article` splits on `==`-level headings and **drops** sections whose normalized heading is one of: track listing, charts, weekly charts, year-end charts, certifications, release history, references, notes, external links, see also, accolades, awards, sales. Everything else is kept: the lead, Background, Recording, Composition/Music/Style, Themes/Lyrics and **Reception**. Subsections follow their parent section. The drop list is a module constant; the Reception on/off experiment toggles one entry.
+
+*Amended 2026-10-06 (owner decision):* Personnel/Credits sections are **kept but filtered**: only `Name – roles` lines with at least one musical or production role stay; crew-only lines (mastering, engineering, photography, design, artwork…) are dropped, because the most-credited names in the data are mastering engineers. `--no-personnel` drops these sections entirely. See the Milestone 2 plan (`docs/superpowers/plans/2026-10-06-tfidf-recommender.md`, Deviations) for this and other drop-list variants.
 
 ### Tag block
 
@@ -171,7 +173,7 @@ For each returned album, per-term **contribution** = Σ over seeds of (seed weig
 
 - `build_tfidf_model` writes a single joblib file to `settings.tfidf_model_path`. New setting `tfidf_model_path`, env `CRATE_TFIDF_MODEL_PATH`, default `<repo>/models/tfidf.joblib`. `models/*.joblib` is gitignored.
 - File contents: fitted vectorizer/transformer vocabularies, the two sparse matrices, album-id ↔ row index, and metadata: `model_version` (build timestamp, ISO 8601), α, vectorizer parameters, number of albums, number with text, catalog source (MusicBrainz dump date), scikit-learn version.
-- Build parameters are overridable on the command line (`--alpha`, `--no-bigrams`, `--no-reception`, `--out`) so evaluation variants are separate model files built by the same code.
+- Build parameters are overridable on the command line (`--alpha`, `--no-bigrams`, `--no-reception`, `--no-personnel`, `--out`) so evaluation variants are separate model files built by the same code.
 - The API loads the model once, lazily on first `tfidf` request, cached per process (`functools.lru_cache` around the loader). Tests can inject a model. If the file is missing, the loader returns `None`.
 - Per request: take the seed rows, multiply by the transposed matrices (sparse, milliseconds), combine per the similarity rule, then rank.
 - Record the built model's file size, in-memory size and build time, and per-request latency for 1, 5 and 50 seeds, in `docs/recommendation-systems.md`.
@@ -233,7 +235,7 @@ Judgments are keyed by (seed, candidate), not by variant, so they are reused by 
 
 `variants.py` holds a registry of named variants: a name, an approach, and (for TF-IDF) a model file path.
 - Core: `overlap`, `tfidf-tags` (α = 1.0: tag block only), `tfidf-tags+text` (α = 0.6).
-- α is applied at scoring time, so `tfidf-tags` and the α sweep use the same model file. Variants that change the text block (`--no-bigrams`, `--no-reception`, SVD) need their own model file.
+- α is applied at scoring time, so `tfidf-tags` and the α sweep use the same model file. Variants that change the text block (`--no-bigrams`, `--no-reception`, `--no-personnel`, SVD) need their own model file.
 
 ### 1. Seed selection (`evaluation.seeds propose`)
 
@@ -281,6 +283,7 @@ Each changes one setting; each needs grading of only the newly surfaced pairs (t
 |---|---|---|
 | `tfidf-a0.4`, `tfidf-a0.8` | α = 0.4 / 0.8 | How much to trust text vs tags |
 | `tfidf-no-reception` | Drop Reception sections | Does critics' language help or add fame bias? |
+| `tfidf-no-personnel` | Drop Personnel/Credits sections | Do shared musicians and producers help, or add same-artist crowding and noise? |
 | `tfidf-no-bigrams` | `ngram_range=(1, 1)` | Are phrases worth the bigger vocabulary? |
 | `tfidf-svd200` | `TruncatedSVD(200)` on the text block | Does topic-level matching beat exact words? |
 | `tfidf-mmr0.7` | MMR re-rank, λ = 0.7, over the top 50 | Does diversity cost relevance? (judged with distinct-artist count alongside NDCG) |
