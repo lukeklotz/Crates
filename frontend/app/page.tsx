@@ -56,6 +56,7 @@ type Recommendation = {
   cover_art_url: string | null;
   score: number;
   shared_terms: string[];
+  shared_text_terms: string[];
 };
 type RecommendationState = {
   status: 'loading' | 'ready' | 'error';
@@ -950,6 +951,11 @@ export default function Home() {
                           <small className="rec-terms">
                             Shares: {r.shared_terms.join(', ')}
                           </small>
+                          {r.shared_text_terms.length > 0 && (
+                            <small className="rec-terms">
+                              Described alike: {r.shared_text_terms.join(', ')}
+                            </small>
+                          )}
                         </span>
                         <button
                           aria-label={`Add ${r.title} to sandbox`}
