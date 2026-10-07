@@ -21,3 +21,6 @@ venv/
 .env
 .env.*
 !.env.example
+
+# Evaluation working file (rebuild with python -m crate_backend.evaluation.pool)
+/eval/pool.jsonl

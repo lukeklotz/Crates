@@ -16,3 +16,8 @@ def test_tfidf_model_path_reads_from_env(monkeypatch):
     monkeypatch.setenv("CRATE_TFIDF_MODEL_PATH", "/tmp/elsewhere.joblib")
     settings = Settings(_env_file=None)
     assert settings.tfidf_model_path == "/tmp/elsewhere.joblib"
+
+
+def test_eval_dir_defaults_to_repo_eval_folder():
+    settings = Settings(_env_file=None)
+    assert settings.eval_dir.endswith("/eval")
