@@ -6,6 +6,8 @@ they don't know well: grading is only as good as the grader's familiarity
 with the seed.
 
 Run with: uv run python -m crate_backend.evaluation.seeds propose [--force]
+          uv run python -m crate_backend.evaluation.seeds list
+          uv run python -m crate_backend.evaluation.seeds swap N "title words" [--artist NAME]
 
 Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
 """
@@ -27,6 +29,7 @@ from crate_backend.evaluation.store import (
     QUARTILES,
     Seed,
     eval_dir,
+    load_seeds,
     popularity_quartile,
     save_seeds,
 )
@@ -223,6 +226,59 @@ def write_proposal(seeds: list[Seed], path: Path, *, force: bool) -> None:
     save_seeds(seeds, path)
 
 
+async def search_candidates(
+    session: AsyncSession, query: str, *, artist: str | None = None, limit: int = 20
+) -> list[SeedCandidate]:
+    """Albums whose title contains `query` (and artist name contains
+    `artist`), case-insensitive, most popular first."""
+    statement = select(Album.id).where(Album.title.icontains(query, autoescape=True))
+    if artist:
+        statement = statement.where(Album.artist_name.icontains(artist, autoescape=True))
+    statement = statement.order_by(Album.popularity.desc().nulls_last(), Album.title).limit(limit)
+    ids = list((await session.scalars(statement)).all())
+    found = {c.album_id: c for c in await load_seed_candidates(session, only=ids)}
+    return [found[album_id] for album_id in ids]
+
+
+def choose_and_swap(
+    seeds: list[Seed],
+    position: int,
+    matches: list[SeedCandidate],
+    *,
+    read_line: Callable[[str], str],
+    write: Callable[[str], None],
+) -> list[Seed] | None:
+    """Ask which match replaces seed `position` (1-based). Returns the new
+    seed list, or None if nothing changed."""
+    if not 1 <= position <= len(seeds):
+        raise ValueError(f"Seed position must be between 1 and {len(seeds)}")
+    current = {seed.album_id for seed in seeds}
+    choices = [m for m in matches if is_eligible(m) and m.album_id not in current]
+    hidden = len(matches) - len(choices)
+    if hidden:
+        write(
+            f"({hidden} matches hidden: already a seed, unknown popularity or < {MIN_TERMS} terms)"
+        )
+    if not choices:
+        write("No eligible matches.")
+        return None
+    for number, match in enumerate(choices, start=1):
+        write(
+            f"{number:2}. {match.title} — {match.artist_name} ({match.release_year or '?'}) "
+            f"[{popularity_quartile(match.popularity)}, {match.n_terms} terms]"
+        )
+    old = seeds[position - 1]
+    answer = read_line(f"Replace #{position} '{old.title}' with (number, Enter to cancel): ")
+    if not answer.strip():
+        return None
+    if not answer.strip().isdigit() or not 1 <= int(answer) <= len(choices):
+        write("Not a choice; nothing changed.")
+        return None
+    updated = list(seeds)
+    updated[position - 1] = seed_from(choices[int(answer) - 1])
+    return updated
+
+
 def _print_seeds(seeds: list[Seed], write: Callable[[str], None] = print) -> None:
     for position, seed in enumerate(seeds, start=1):
         write(f"{position:2}. [{seed.popularity_quartile:9}] {seed.title} — {seed.artist_name}")
@@ -240,21 +296,44 @@ async def _propose(force: bool) -> None:
     print('Swap any you don\'t know well: ... seeds swap N "title words"')
 
 
+async def _swap(position: int, query: str, artist: str | None) -> None:
+    path = eval_dir() / "seeds.json"
+    seeds = load_seeds(path)
+    async with async_session_factory() as session:
+        matches = await search_candidates(session, query, artist=artist)
+    updated = choose_and_swap(seeds, position, matches, read_line=input, write=print)
+    if updated is None:
+        print("Nothing changed.")
+        return
+    save_seeds(updated, path)
+    print(f"Swapped #{position}: {seeds[position - 1].title} → {updated[position - 1].title}")
+    print("Grades for the old seed stay in judgments.jsonl; the scorer ignores them.")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Propose or swap evaluation seed albums.")
     commands = parser.add_subparsers(dest="command", required=True)
     propose = commands.add_parser("propose", help="write a fresh eval/seeds.json")
     propose.add_argument("--force", action="store_true", help="replace an existing seeds.json")
+    commands.add_parser("list", help="print the current seeds with their positions")
+    swap = commands.add_parser("swap", help="replace one seed with a searched album")
+    swap.add_argument("position", type=int, help="seed number as listed by `list` (1-based)")
+    swap.add_argument("query", help="words from the album title")
+    swap.add_argument("--artist", default=None, help="words from the artist name")
     return parser.parse_args(argv)
 
 
 def main() -> None:
     args = parse_args()
-    if args.command == "propose":
-        try:
+    try:
+        if args.command == "propose":
             asyncio.run(_propose(args.force))
-        except FileExistsError as error:
-            raise SystemExit(str(error)) from error
+        elif args.command == "list":
+            _print_seeds(load_seeds(eval_dir() / "seeds.json"))
+        else:
+            asyncio.run(_swap(args.position, args.query, args.artist))
+    except (FileExistsError, FileNotFoundError, ValueError) as error:
+        raise SystemExit(str(error)) from error
 
 
 if __name__ == "__main__":

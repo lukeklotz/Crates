@@ -8,8 +8,10 @@ from crate_backend.evaluation.seeds import (
     GENRE_BUCKETS,
     SeedCandidate,
     broad_genre,
+    choose_and_swap,
     load_seed_candidates,
     propose_seeds,
+    search_candidates,
     write_proposal,
 )
 from crate_backend.evaluation.store import Seed
@@ -195,3 +197,74 @@ async def test_load_seed_candidates_merges_terms_and_picks_top_genre(db_session)
         top_genre="Zzfixture-Seed High Genre",
         n_terms=3,
     )
+
+
+OLD = Seed(uuid.uuid5(uuid.NAMESPACE_URL, "old"), "Old Seed", "Old Artist", "top")
+KEEP = Seed(uuid.uuid5(uuid.NAMESPACE_URL, "keep"), "Kept Seed", "Kept Artist", "bottom")
+
+
+def swap(matches, answer: str, position: int = 1):
+    out: list[str] = []
+    result = choose_and_swap(
+        [OLD, KEEP], position, matches, read_line=lambda prompt: answer, write=out.append
+    )
+    return result, "\n".join(out)
+
+
+def test_swap_replaces_the_position_with_the_chosen_match():
+    first, second = cand(0, 0.3, "Jazz"), cand(1, 0.6, "Jazz")
+
+    result, text = swap([first, second], "2")
+
+    assert result == [Seed(second.album_id, second.title, second.artist_name, "upper-mid"), KEEP]
+    assert " 1. " in text and " 2. " in text
+
+
+def test_swap_cancelled_with_enter_changes_nothing():
+    result, _ = swap([cand(0, 0.3, "Jazz")], "")
+
+    assert result is None
+
+
+def test_swap_hides_ineligible_matches_and_current_seeds():
+    eligible = cand(0, 0.3, "Jazz")
+    already_seed = replace(cand(1, 0.3, "Jazz"), album_id=KEEP.album_id)
+    few_terms = cand(2, 0.3, "Jazz", n_terms=2)
+
+    result, text = swap([already_seed, few_terms, eligible], "1")
+
+    assert result[0].album_id == eligible.album_id
+    assert "2 matches hidden" in text
+
+
+def test_swap_with_no_eligible_match_says_so():
+    result, text = swap([cand(0, None, "Jazz")], "1")
+
+    assert result is None
+    assert "No eligible matches" in text
+
+
+@pytest.mark.parametrize("answer", ["0", "5", "x"])
+def test_swap_with_an_invalid_choice_changes_nothing(answer):
+    result, text = swap([cand(0, 0.3, "Jazz")], answer)
+
+    assert result is None
+    assert "Not a choice" in text
+
+
+def test_swap_position_out_of_range_is_an_error():
+    with pytest.raises(ValueError, match="between 1 and 2"):
+        swap([cand(0, 0.3, "Jazz")], "1", position=3)
+
+
+async def test_search_candidates_matches_title_words_and_artist(db_session):
+    wanted = Album(title="Zzfixture Swap Album", artist_name="Zzfixture Swap Artist")
+    other = Album(title="Zzfixture Swap Album", artist_name="Someone Else")
+    db_session.add_all([wanted, other])
+    await db_session.flush()
+
+    by_title = await search_candidates(db_session, "zzfixture SWAP")
+    by_artist = await search_candidates(db_session, "zzfixture swap", artist="swap artist")
+
+    assert {c.album_id for c in by_title} == {wanted.id, other.id}
+    assert [c.album_id for c in by_artist] == [wanted.id]
