@@ -80,6 +80,17 @@ def _classify(response: httpx.Response) -> AlbumInfoResult:
     return AlbumInfoResult(FetchOutcome.FOUND, listeners=listeners, artist=artist, title=title)
 
 
+# Last.fm files curly-quoted and Unicode-hyphenated spellings as separate,
+# nearly empty entries ("Can’t Slow Down": 564 listeners; "Can't Slow
+# Down": 411,998), so names are sent with plain ASCII punctuation. Dashes
+# are left alone: titles like "Float Along – Fill Your Lungs" match as is.
+_ASCII_PUNCTUATION = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "‐": "-", "‑": "-"})
+
+
+def _lastfm_spelling(name: str) -> str:
+    return name.translate(_ASCII_PUNCTUATION)
+
+
 async def fetch_album_info(
     client: httpx.AsyncClient, api_key: str, artist_name: str, album_title: str
 ) -> AlbumInfoResult:
@@ -92,8 +103,8 @@ async def fetch_album_info(
     params = {
         "method": "album.getinfo",
         "api_key": api_key,
-        "artist": artist_name,
-        "album": album_title,
+        "artist": _lastfm_spelling(artist_name),
+        "album": _lastfm_spelling(album_title),
         "format": "json",
     }
     backoff = INITIAL_BACKOFF_SECONDS

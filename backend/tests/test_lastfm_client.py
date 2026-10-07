@@ -164,3 +164,21 @@ async def test_non_string_artist_is_not_found_instead_of_crashing(sleeps):
     async with ac:
         result = await client.fetch_album_info(ac, "test-key", "Radiohead", "Kid A")
     assert result.outcome is client.FetchOutcome.NOT_FOUND
+
+
+async def test_curly_quotes_and_unicode_hyphens_are_sent_as_ascii(sleeps):
+    # Last.fm files "Can’t Slow Down" (564 listeners) apart from the real
+    # "Can't Slow Down" (411,998), so the plain spelling must be sent.
+    ac, requests = _client([_found_response()])
+    async with ac:
+        await client.fetch_album_info(ac, "test-key", "Run‐D.M.C.", "Can’t “Slow” Down ‘Live’")
+    params = requests[0].url.params
+    assert params["artist"] == "Run-D.M.C."
+    assert params["album"] == "Can't \"Slow\" Down 'Live'"
+
+
+async def test_dashes_are_left_alone(sleeps):
+    ac, requests = _client([_found_response()])
+    async with ac:
+        await client.fetch_album_info(ac, "test-key", "King Gizzard", "Float Along – Fill Your Lungs")
+    assert requests[0].url.params["album"] == "Float Along – Fill Your Lungs"
