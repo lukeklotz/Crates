@@ -179,9 +179,27 @@ def run_grader(
     shown_seed: uuid.UUID | None = None
     position = 0
 
+    def undo() -> None:
+        nonlocal shown_seed
+        pair, line = written.pop()
+        remove_line(judgments_path, line)
+        queue.insert(position, pair)
+        shown_seed = None
+        write(f"Undid the grade for {cards[pair[1]].title}.")
+
     write(RUBRIC)
     try:
-        while position < len(queue):
+        while True:
+            if position >= len(queue):
+                # One last chance to undo a mis-keyed final grade.
+                if not written:
+                    break
+                write("")
+                write("That was the last pair: u to undo the last grade, any other key to finish.")
+                if read_key().strip().lower() != "u":
+                    break
+                undo()
+                continue
             seed_id, candidate_id = queue[position]
             if candidate_id not in cards:
                 write(f"(skipping {candidate_id}: no longer in the catalog)")
@@ -207,14 +225,10 @@ def run_grader(
             elif key == "s":
                 position += 1
             elif key == "u":
-                if not written:
+                if written:
+                    undo()
+                else:
                     write("Nothing to undo in this session.")
-                    continue
-                pair, line = written.pop()
-                remove_line(judgments_path, line)
-                queue.insert(position, pair)
-                shown_seed = None
-                write(f"Undid the grade for {cards[pair[1]].title}.")
             else:
                 break
     except KeyboardInterrupt:
@@ -257,6 +271,10 @@ def main() -> None:
     seeds = load_seeds(folder / "seeds.json")
     pool = load_pool(pool_path)
     cards = asyncio.run(_load(seeds, pool))
+    try:
+        load_judgments(folder / "judgments.jsonl")
+    except ValueError as error:
+        raise SystemExit(f"Fix this line before grading: {error}") from error
     run_grader(
         pool,
         seeds,

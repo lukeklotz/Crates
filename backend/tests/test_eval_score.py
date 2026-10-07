@@ -95,3 +95,17 @@ def test_report_ignores_judgments_for_seeds_no_longer_in_the_seeds_file():
     report = build_report(seeds, runs, grades, {}, model_versions={}, today=date(2026, 10, 8))
 
     assert "Judgments: 1 for the current 1 seeds" in report
+
+
+def test_flag_fires_when_one_seed_is_under_judged_even_if_the_mean_is_high():
+    seeds = [Seed(uid(f"seed{i}"), f"Seed {i}", f"Artist {i}", "top") for i in range(10)]
+    good = [uid(f"good{i}") for i in range(10)]
+    runs = {"v": {s.album_id: list(good) for s in seeds}}
+    grades = {(s.album_id, album): 2 for s in seeds for album in good}
+    # A rebuilt model put 6 ungraded albums into one seed's top 10.
+    runs["v"][seeds[0].album_id] = good[:4] + [uid(f"new{i}") for i in range(6)]
+
+    report = build_report(seeds, runs, grades, {}, model_versions={}, today=date(2026, 10, 8))
+
+    assert "| v | all | 10/10 |" in report
+    assert "0.94 ⚠" in report

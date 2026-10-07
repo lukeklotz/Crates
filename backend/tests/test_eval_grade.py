@@ -36,7 +36,8 @@ def grade(path, keys, pool, cards=CARDS):
     remaining = iter(keys)
 
     def read_key() -> str:
-        key = next(remaining)
+        # Running out of scripted keys behaves like end of input: quit.
+        key = next(remaining, "q")
         if isinstance(key, BaseException):
             raise key
         return key
@@ -102,6 +103,16 @@ def test_undo_never_touches_grades_from_earlier_sessions(tmp_path):
     assert count == 0
     assert "Nothing to undo" in text
     assert path.read_text().splitlines() == [earlier]
+
+
+def test_the_last_grade_in_the_pool_can_be_undone(tmp_path):
+    path = tmp_path / "judgments.jsonl"
+
+    count, text = grade(path, ["1", "2", "u", "0", "q"], [(S1, A), (S1, B)])
+
+    assert count == 2
+    assert sorted(load_judgments(path).values()) == [0, 1]
+    assert "Undid" in text
 
 
 def test_quit_reports_progress(tmp_path):

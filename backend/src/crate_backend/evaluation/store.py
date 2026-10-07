@@ -8,6 +8,7 @@ Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
 """
 
 import json
+import os
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -73,7 +74,10 @@ def load_judgments(path: Path) -> dict[Pair, int]:
     for number, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path} line {number}: not valid JSON ({error})") from error
         if row["grade"] not in GRADES:
             raise ValueError(f"{path} line {number}: grade must be 0, 1 or 2")
         grades[(uuid.UUID(row["seed_id"]), uuid.UUID(row["candidate_id"]))] = row["grade"]
@@ -94,18 +98,31 @@ def judgment_line(
 
 
 def append_line(path: Path, line: str) -> None:
+    """Append one line. A file hand-edited without a final newline gets one
+    first, so the new line never joins onto the last."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    needs_newline = path.exists() and path.stat().st_size > 0 and not _ends_with_newline(path)
     with path.open("a") as file:
-        file.write(line + "\n")
+        file.write(("\n" if needs_newline else "") + line + "\n")
+
+
+def _ends_with_newline(path: Path) -> bool:
+    with path.open("rb") as file:
+        file.seek(-1, os.SEEK_END)
+        return file.read(1) == b"\n"
 
 
 def remove_line(path: Path, line: str) -> bool:
-    """Remove the last exact copy of `line` (the grader's undo). False if absent."""
+    """Remove the last exact copy of `line` (the grader's undo). False if
+    absent. Written to a temp file and renamed, so a crash mid-write never
+    leaves the judgments file empty or cut short."""
     lines = path.read_text().splitlines()
     for index in range(len(lines) - 1, -1, -1):
         if lines[index] == line:
             del lines[index]
-            path.write_text("".join(kept + "\n" for kept in lines))
+            temp = path.with_suffix(path.suffix + ".tmp")
+            temp.write_text("".join(kept + "\n" for kept in lines))
+            os.replace(temp, path)
             return True
     return False
 

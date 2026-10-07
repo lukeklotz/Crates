@@ -121,7 +121,9 @@ def _row(
             facts[a].popularity for a in ranked if a in facts and facts[a].popularity is not None
         ]
     judged_mean = _mean(judged)
-    flag = " ⚠" if judged_mean is not None and judged_mean < JUDGED_FLAG else ""
+    # Flag on the worst seed, not the mean: ungraded results bunched in one
+    # seed understate that seed's NDCG even when the row average looks fine.
+    flag = " ⚠" if judged and min(judged) < JUDGED_FLAG else ""
     median = statistics.median(popularities) if popularities else None
     return (
         f"| {name} | {group} | {len(ndcgs)}/{len(seeds)} | {_fmt(_mean(ndcgs), 3)} | "
@@ -176,8 +178,8 @@ def build_report(
         "",
         (
             f"Scored = seeds with at least one candidate graded ≥ 1 (NDCG@{k} and Recall@{k} "
-            f"average over these). Ungraded results count as 0; ⚠ marks Judged@{k} < "
-            f"{JUDGED_FLAG}: run the pool and grader before trusting that row."
+            f"average over these). Ungraded results count as 0; ⚠ marks a row where any seed's "
+            f"Judged@{k} is below {JUDGED_FLAG}: run the pool and grader before trusting it."
         ),
         "",
         (

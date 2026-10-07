@@ -101,3 +101,38 @@ def test_pool_round_trip(tmp_path):
     save_pool([(A, B), (A, C)], path)
 
     assert load_pool(path) == [(A, B), (A, C)]
+
+
+def test_remove_line_leaves_the_file_intact_if_the_rewrite_fails(tmp_path, monkeypatch):
+    from crate_backend.evaluation import store
+
+    path = tmp_path / "judgments.jsonl"
+    first, other = judgment_line(A, B, 2, AT), judgment_line(A, C, 1, AT)
+    for line in (first, other):
+        append_line(path, line)
+
+    def crash(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store.os, "replace", crash, raising=False)
+    with pytest.raises(OSError):
+        remove_line(path, other)
+
+    assert path.read_text().splitlines() == [first, other]
+
+
+def test_append_after_a_hand_edit_without_a_trailing_newline(tmp_path):
+    path = tmp_path / "judgments.jsonl"
+    path.write_text(judgment_line(A, B, 2, AT))
+
+    append_line(path, judgment_line(A, C, 1, AT))
+
+    assert load_judgments(path) == {(A, B): 2, (A, C): 1}
+
+
+def test_unreadable_judgment_line_names_the_line(tmp_path):
+    path = tmp_path / "judgments.jsonl"
+    path.write_text(judgment_line(A, B, 2, AT) + '\n{"seed_id": "trunc\n')
+
+    with pytest.raises(ValueError, match="judgments.jsonl line 2"):
+        load_judgments(path)
