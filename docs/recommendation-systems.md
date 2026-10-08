@@ -32,7 +32,7 @@ Every approach answers the same question: **given the albums in a user's group (
 
 ### The answer key
 
-The key lives in top-level `eval/` and is committed:
+The key lives in top-level `eval/`. The seeds are committed; the grades are not (`judgments.jsonl` is gitignored and stays on the owner's machine):
 
 - `seeds.json`: 10 single-album seeds (cut from the originally proposed 25, kept in `seeds-full-25.json`, because grading 25 seeds × top 10 was too slow): 4 from the top popularity quartile, 2 from upper-mid, 2 from lower-mid and 2 from bottom, picked for a mix of genres by hand (the original proposal spread them across ten broad genres), no two by the same artist, each with at least 5 genre/tag terms. With 10 seeds, differences between close variants are noise; the key can separate approaches that differ clearly. Proposed by a script, then reviewed by hand: grading is only as good as the grader's familiarity with the seed.
 - `judgments.jsonl`: one hand grade per line, `{seed_id, candidate_id, grade, graded_at}`. Grades are keyed by (seed, candidate), not by approach, so every approach, including Phase 5's, reuses them and only albums nobody has graded need grading. A grade can be corrected by appending a new line; the last line for a pair wins.
