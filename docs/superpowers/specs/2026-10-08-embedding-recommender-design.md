@@ -13,11 +13,11 @@ The phase answers one question with numbers: **does a pretrained embedding model
 ## Decisions made in conversation
 
 - **Scope is 5a only.** Out of scope, deferred to a possible 5b spec: `pgvector` storage, the PyTorch projection model (negative sampling, metric learning), MLflow tracking and model registry. Vectors fit in one file (25,000 × 384 float32 ≈ 38 MB each), which is how the TF-IDF model is already served.
-- **Long articles: chunk and average.** Sentence encoders read only ~200–250 tokens at a time. Each cleaned article is split into chunks, each chunk is embedded, and the chunk vectors are averaged into one text vector. Embedding only the article's lead was rejected because it drops the reception and personnel text Phase 4 deliberately kept.
+- **Long articles: chunk and average.** Sentence encoders read only a few hundred tokens at a time (512 for the chosen encoder). Each cleaned article is split into chunks, each chunk is embedded, and the chunk vectors are averaged into one text vector. Embedding only the article's lead was rejected because it drops the reception and personnel text Phase 4 deliberately kept.
 - **Two vectors per album, blended with α**, exactly as in TF-IDF, so each representation is compared on identical inputs.
 - **Coverage of text stays at ~51%.** Albums without an article keep a tag vector only and are compared on tags, as in TF-IDF. A 50-album spike (2026-10-08) tried Last.fm blurbs and tags, Discogs notes/styles and artist Wikipedia articles as extra text sources. Of 31 sampled albums with no Wikipedia album article, album prose was found for 6 (none in the bottom quartile; 0 of 8) and an artist article for 13 (1 of 8 in the bottom quartile). The obscure albums are missing from every source, so more text ingestion is not worth building for coverage. Discogs styles (12 of 31) remain a possible structured feature for 5b.
 - **Rollout mirrors Phase 4:** `approach: "embeddings"` is opt-in; the default changes only if the answer key says embeddings win. No frontend toggle.
-- **Encoder:** `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions, ~90 MB, 256-token limit). Small enough for an 8 GB machine; a standard baseline. Comparing other encoders is a stretch variant, not part of the phase.
+- **Encoder:** `BAAI/bge-small-en-v1.5` (384 dimensions, ~130 MB, 512-token limit). Small enough for an 8 GB machine, and it reads twice the window of the older `all-MiniLM-L6-v2` at the same vector size. Chosen 2026-10-08 over MiniLM on recalled benchmark scores, not on a Crate measurement. BGE's query-instruction prefix is for short-query-to-passage search and is **not** used: album-to-album similarity is symmetric, so every text is embedded as is. `all-MiniLM-L6-v2` is the first stretch variant (a one-line encoder swap); comparing larger encoders is not part of the phase.
 
 ## Scope
 
@@ -39,7 +39,7 @@ Each milestone ends at a checkpoint with the owner.
 Reuses `load_album_docs` from `build_tfidf_model` (term votes and `clean_article` text, same `--no-reception` / `--no-personnel` flags), so both approaches see identical inputs.
 
 - **Tag string:** the album's normalized genre/tag terms ordered by vote count descending, top 20, joined with commas ("spiritual jazz, hard bop, modal jazz, …"). Every album has at least one term. The tag string is embedded as one text.
-- **Text chunks:** the cleaned article is split on whitespace into windows of **150 words** (about 200 word-pieces, safely under the encoder's 256-token limit, which would otherwise truncate silently). A final window shorter than 30 words is merged into the previous one. No overlap. Each chunk is embedded.
+- **Text chunks:** the cleaned article is split on whitespace into windows of **250 words** (roughly 350 word-pieces for music prose full of names and accents, safely under the encoder's 512-token limit, which would otherwise truncate silently; the build sets `max_seq_length` to 512 explicitly and asserts no chunk exceeds it). A final window shorter than 50 words is merged into the previous one. No overlap. Each chunk is embedded.
 - **Text vector:** the unweighted mean of the album's chunk vectors, re-normalized to unit length. Albums with no cleaned text get a zero row and `has_text = False`.
 - Both vectors are L2-normalized, so dot products are cosines.
 
@@ -53,12 +53,12 @@ The encoder is a small protocol, `encode(texts: list[str]) -> np.ndarray` of uni
 - Contents: `album_ids`, `titles`, `tag_vectors` (albums × 384), `text_vectors` (albums × 384, zero rows where no text), `has_text`, each album's `term_votes` (for explanations), and `metadata`.
 - Metadata is the lightweight form of the plan's "version each embedding by album document, encoder, data snapshot, and creation time": `model_version` (ISO 8601 build time), `encoder_name`, `encoder_revision` (the Hugging Face commit hash), `embedding_dim`, `chunk_words`, `tag_terms_per_album`, α, document flags (`drop_reception`, `drop_personnel`), `n_albums`, `n_with_text`, `n_chunks`, catalog snapshot (MusicBrainz dump date, as in the TF-IDF metadata), `sentence_transformers_version`, `torch_version`.
 - Command line: `--alpha` (default 0.6, stored in metadata and overridable at scoring time as for TF-IDF), `--no-reception`, `--no-personnel`, `--device cpu|mps`, `--batch-size`, `--out`.
-- Records build time, peak memory and chunks per second in `docs/recommendation-systems.md`. Estimate before measuring: ~88,000 chunks, minutes on this machine.
+- Records build time, peak memory and chunks per second in `docs/recommendation-systems.md`. Estimate before measuring: roughly 50,000 chunks (79 MB of text at 250 words each), minutes on this machine.
 
 ### Milestone 1 tests
 
 No `torch`, no network, no database (tiny made-up catalogs, a fake encoder whose vectors are derived from word hashes or fixed per text):
-- Chunker: 150-word windows; a 20-word tail merged into the previous chunk; text shorter than a window gives one chunk; empty text gives none.
+- Chunker: 250-word windows; a 40-word tail merged into the previous chunk; text shorter than a window gives one chunk; empty text gives none.
 - Text vector is the re-normalized mean of its chunk vectors; an album without text has a zero row and `has_text = False`.
 - Tag string: ordered by votes, capped at 20, deterministic tie order.
 - Save → load round-trip gives identical vectors and metadata.
