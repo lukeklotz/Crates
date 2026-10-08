@@ -18,7 +18,7 @@ from crate_backend.evaluation.store import Seed
 from crate_backend.recommend.overlap import recommend_by_overlap
 from crate_backend.recommend.tfidf import TfidfModel, load_model, recommend
 
-TOP_K = 10
+TOP_K = 5
 
 
 @dataclass(frozen=True)

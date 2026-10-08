@@ -24,36 +24,6 @@
     "popularity_quartile": "top"
   },
   {
-    "album_id": "d0bcdb56-724e-4e43-b6b7-00c0be2f1c40",
-    "title": "R Plus Seven",
-    "artist_name": "Oneohtrix Point Never",
-    "popularity_quartile": "top"
-  },
-  {
-    "album_id": "f73de2f9-9463-4d0b-a1ea-c5ae6022c68b",
-    "title": "Getting Killed",
-    "artist_name": "Geese",
-    "popularity_quartile": "top"
-  },
-  {
-    "album_id": "d5e11230-709b-4a14-ab7b-4aa3f2e801ef",
-    "title": "Younger Now",
-    "artist_name": "Miley Cyrus",
-    "popularity_quartile": "top"
-  },
-  {
-    "album_id": "917945e3-4e71-44aa-8145-1d051ca80b1b",
-    "title": "Tally Ho!",
-    "artist_name": "Wagon Christ",
-    "popularity_quartile": "upper-mid"
-  },
-  {
-    "album_id": "8bcce52f-03b5-48db-ae28-ad182b1dd7de",
-    "title": "Kunststoff",
-    "artist_name": "Move D",
-    "popularity_quartile": "upper-mid"
-  },
-  {
     "album_id": "b8a80fb0-401b-440d-865f-3cf80f1a1c42",
     "title": "Kiko",
     "artist_name": "Los Lobos",
@@ -66,45 +36,9 @@
     "popularity_quartile": "upper-mid"
   },
   {
-    "album_id": "3a3baa0a-dda4-410b-80f1-1dee3277ecf3",
-    "title": "Paul Stanley",
-    "artist_name": "Paul Stanley",
-    "popularity_quartile": "upper-mid"
-  },
-  {
-    "album_id": "9a0cd2f7-be11-4d6d-933e-1d47e4d6a774",
-    "title": "Container",
-    "artist_name": "Lackluster",
-    "popularity_quartile": "upper-mid"
-  },
-  {
-    "album_id": "bd41663c-35fc-450d-84c8-b90cdf90cc2f",
-    "title": "Memory Vague",
-    "artist_name": "Oneohtrix Point Never",
-    "popularity_quartile": "lower-mid"
-  },
-  {
-    "album_id": "442dce8d-2a6b-4f32-8794-63ae550e55fe",
-    "title": "Radiant Bloom",
-    "artist_name": "Astronoid",
-    "popularity_quartile": "lower-mid"
-  },
-  {
-    "album_id": "80c50207-cc5c-4183-9b9d-abe60817ce6e",
-    "title": "The Blind Spot",
-    "artist_name": "Alec K. Redfearn and the Eyesores",
-    "popularity_quartile": "lower-mid"
-  },
-  {
     "album_id": "705979bf-c857-409d-8014-4228ddc09812",
     "title": "Louder Than Words",
     "artist_name": "Lionel Richie",
-    "popularity_quartile": "lower-mid"
-  },
-  {
-    "album_id": "0f6921b2-6d87-48c4-b535-8841bf036f49",
-    "title": "Paradiso",
-    "artist_name": "THE ECCENTRIC OPERA",
     "popularity_quartile": "lower-mid"
   },
   {
@@ -112,18 +46,6 @@
     "title": "Welcome Home",
     "artist_name": "Osibisa",
     "popularity_quartile": "lower-mid"
-  },
-  {
-    "album_id": "e017ed1f-1c20-4cdc-b03f-d52ca3cf7444",
-    "title": "Move D • Namlook VI: Live in Heidelberg 2001",
-    "artist_name": "Move D • Namlook",
-    "popularity_quartile": "bottom"
-  },
-  {
-    "album_id": "c1a5d498-ba9a-4398-8b8e-70d7d6ab1bc9",
-    "title": "Originals",
-    "artist_name": "Tommaso Cappellato",
-    "popularity_quartile": "bottom"
   },
   {
     "album_id": "599b795d-9bbf-4367-8f90-7627dbb2dfbe",
@@ -135,18 +57,6 @@
     "album_id": "4f4a5430-b152-4579-86be-d12af89ae6bd",
     "title": "ESCAPISM",
     "artist_name": "Neko Milkshake",
-    "popularity_quartile": "bottom"
-  },
-  {
-    "album_id": "922999b4-7c69-4972-ab0a-0ca386d90af4",
-    "title": "You Didn't Really",
-    "artist_name": "Arcangel Legrand - Brotherswagg",
-    "popularity_quartile": "bottom"
-  },
-  {
-    "album_id": "1273771f-c2f7-489c-9581-61d1c00d3a77",
-    "title": "lostfoundmp3player2005-2011収集disc2",
-    "artist_name": "undersaken",
     "popularity_quartile": "bottom"
   }
 ]

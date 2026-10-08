@@ -34,7 +34,7 @@ Every approach answers the same question: **given the albums in a user's group (
 
 The key lives in top-level `eval/` and is committed:
 
-- `seeds.json`: 25 single-album seeds, 7 from the top popularity quartile and 6 from each of the others, spread across ten broad genres (jazz, rock, electronic, hip hop, metal, folk, pop, classical, soul/R&B, world), no two by the same artist, each with at least 5 genre/tag terms. Proposed by a script, then reviewed by hand: grading is only as good as the grader's familiarity with the seed.
+- `seeds.json`: 10 single-album seeds (cut from the originally proposed 25, kept in `seeds-full-25.json`, because grading 25 seeds × top 10 was too slow): 4 from the top popularity quartile, 2 from upper-mid, 2 from lower-mid and 2 from bottom, spread across jazz, pop/dream pop, electronic, hip hop, folk/rock, metal, soul/R&B, world and rock, no two by the same artist, each with at least 5 genre/tag terms. With 10 seeds, differences between close variants are noise; the key can separate approaches that differ clearly. Proposed by a script, then reviewed by hand: grading is only as good as the grader's familiarity with the seed.
 - `judgments.jsonl`: one hand grade per line, `{seed_id, candidate_id, grade, graded_at}`. Grades are keyed by (seed, candidate), not by approach, so every approach, including Phase 5's, reuses them and only albums nobody has graded need grading. A grade can be corrected by appending a new line; the last line for a pair wins.
 - `results/YYYY-MM-DD.md`: the report from each scoring run.
 
@@ -51,7 +51,7 @@ All commands run from `backend/`.
 
 1. `uv run python -m crate_backend.evaluation.seeds propose` writes `eval/seeds.json` (refuses to overwrite it without `--force`).
 2. `uv run python -m crate_backend.evaluation.seeds list` shows the seeds by number; `... seeds swap N "title words" [--artist NAME]` replaces seed N with an album you pick from the search results.
-3. `uv run python -m crate_backend.evaluation.pool [--variants a,b,c]` takes each variant's top 10 per seed and writes the pairs nobody has graded to `eval/pool.jsonl` (a working file, not committed). Default: the three core variants.
+3. `uv run python -m crate_backend.evaluation.pool [--variants a,b,c]` takes each variant's top 5 per seed and writes the pairs nobody has graded to `eval/pool.jsonl` (a working file, not committed). Default: the three core variants.
 4. `uv run python -m crate_backend.evaluation.grade` shows each pair one at a time, grouped by seed, in random order, without saying which approach produced it. Each album shows title, artist, year, top 8 genre/tag terms and the first sentence of its Wikipedia article. Keys (no Enter needed): `0`/`1`/`2` grade, `s` skip, `u` undo the last grade, `q` quit. Every grade is saved immediately; rerun to resume.
 5. `uv run python -m crate_backend.evaluation.score [--variants a,b,c]` prints the report and saves it to `eval/results/`.
 
@@ -59,12 +59,12 @@ All commands run from `backend/`.
 
 All at K = 10, per variant, over all seeds and per popularity quartile:
 
-- **NDCG@10** (Normalized Discounted Cumulative Gain), the headline metric. Each result earns `2^grade − 1` (a 2 is worth three 1s), discounted the further down the list it sits, divided by the best score possible from every album graded for that seed. 1.0 means the best-graded albums found by any approach are at the top. Example: for *Kid A*, a list that puts *Amnesiac* (graded 2) first scores higher than one that has it tenth.
-- **Pooled Recall@10:** of all the albums graded 1 or 2 for a seed (whichever approach found them), the share in this variant's top 10. Example: 6 good albums known for a seed, 3 in the top 10, so 0.5.
-- **Judged@10:** the share of the top 10 that has a grade. Ungraded results count as 0, so a row where any seed is below 0.9 is marked ⚠: the approach changed since grading, and the new pool needs grading before the row means anything.
+- **NDCG@5** (Normalized Discounted Cumulative Gain), the headline metric. Each result earns `2^grade − 1` (a 2 is worth three 1s), discounted the further down the list it sits, divided by the best score possible from every album graded for that seed. 1.0 means the best-graded albums found by any approach are at the top. Example: for *Kid A*, a list that puts *Amnesiac* (graded 2) first scores higher than one that has it fifth.
+- **Pooled Recall@5:** of all the albums graded 1 or 2 for a seed (whichever approach found them), the share in this variant's top 5. Example: 6 good albums known for a seed, 3 in the top 5, so 0.5.
+- **Judged@5:** the share of the top 5 that has a grade. Ungraded results count as 0, so a row where any seed is below 0.9 is marked ⚠: the approach changed since grading, and the new pool needs grading before the row means anything.
 - **Median popularity** of returned albums: shows whether an approach leans to famous or obscure albums.
-- **Artists in top 10:** mean number of distinct artists, a diversity check (same-artist crowding).
-- **Wins / losses / ties:** per seed, which of two variants had the higher NDCG@10. With 25 seeds, a consistent win count is more trustworthy than a small difference in averages.
+- **Artists in top 5:** mean number of distinct artists, a diversity check (same-artist crowding).
+- **Wins / losses / ties:** per seed, which of two variants had the higher NDCG@5. With 10 seeds, a consistent win count is more trustworthy than a small difference in averages.
 
 Seeds where nothing was graded 1 or 2 have no NDCG or Recall and are left out of the averages; the report's "Scored" column shows how many seeds counted.
 
