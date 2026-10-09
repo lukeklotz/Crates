@@ -65,7 +65,9 @@ async def _pool(variant_names: str | None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Write the ungraded pairs to eval/pool.jsonl.")
-    parser.add_argument("--variants", default=None, help="comma-separated; default: core three")
+    parser.add_argument(
+        "--variants", default=None, help="comma-separated; default: the five core variants"
+    )
     args = parser.parse_args()
     try:
         asyncio.run(_pool(args.variants))

@@ -2,8 +2,9 @@
 (Phase 4, Milestone 3).
 
 α is applied at scoring time, so tfidf-tags, tfidf-tags+text and the α
-sweep share one model file. Variants that change the text block need
-their own file, built with the flags in `build_flags`.
+sweep share one model file, and the two embedding variants (Phase 5a)
+share another. Variants that change the TF-IDF text block need their own
+file, built with the flags in `build_flags`.
 """
 
 import uuid
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from crate_backend.core.config import get_settings
 from crate_backend.evaluation.store import Seed
+from crate_backend.recommend import embeddings
 from crate_backend.recommend.overlap import recommend_by_overlap
 from crate_backend.recommend.tfidf import TfidfModel, load_model, recommend
 
@@ -24,13 +26,15 @@ TOP_K = 5
 @dataclass(frozen=True)
 class Variant:
     name: str
-    approach: str  # "overlap" | "tfidf"
+    approach: str  # "overlap" | "tfidf" | "embeddings"
     # TF-IDF only. None means the default model file (settings.tfidf_model_path).
     model_file: str | None = None
     build_flags: tuple[str, ...] = ()
     alpha: float | None = None
 
     def model_path(self) -> Path:
+        if self.approach == "embeddings":
+            return Path(get_settings().embeddings_model_path)
         default = Path(get_settings().tfidf_model_path)
         return default if self.model_file is None else default.with_name(self.model_file)
 
@@ -45,6 +49,8 @@ VARIANTS = {
         Variant("overlap", "overlap"),
         Variant("tfidf-tags", "tfidf", alpha=1.0),
         Variant("tfidf-tags+text", "tfidf", alpha=0.6),
+        Variant("embed-tags", "embeddings", alpha=1.0),
+        Variant("embed-tags+text", "embeddings", alpha=0.6),
         # Stretch variants (spec: grade only after the core is graded).
         Variant("tfidf-a0.4", "tfidf", alpha=0.4),
         Variant("tfidf-a0.8", "tfidf", alpha=0.8),
@@ -53,7 +59,7 @@ VARIANTS = {
         _file_variant("tfidf-no-bigrams", "--no-bigrams"),
     )
 }
-CORE_VARIANTS = ("overlap", "tfidf-tags", "tfidf-tags+text")
+CORE_VARIANTS = ("overlap", "tfidf-tags", "tfidf-tags+text", "embed-tags", "embed-tags+text")
 
 
 def parse_variant_names(text: str | None) -> list[Variant]:
@@ -84,6 +90,31 @@ def tfidf_model(variant: Variant) -> TfidfModel:
     return _models[path]
 
 
+_embedding_models: dict[Path, embeddings.EmbeddingModel] = {}
+
+
+def embedding_model(variant: Variant) -> embeddings.EmbeddingModel:
+    path = variant.model_path()
+    if path not in _embedding_models:
+        if not path.exists():
+            raise ModelNotBuilt(
+                f"{variant.name}: no model at {path}. Build it with: uv sync --group "
+                f"embeddings && uv run python -m crate_backend.scripts.build_embedding_model "
+                f"--out {path}"
+            )
+        _embedding_models[path] = embeddings.load_model(path)
+    return _embedding_models[path]
+
+
+def model_version(variant: Variant) -> str | None:
+    """Build time of the model file behind a variant; None for overlap."""
+    if variant.approach == "tfidf":
+        return tfidf_model(variant).metadata["model_version"]
+    if variant.approach == "embeddings":
+        return embedding_model(variant).metadata["model_version"]
+    return None
+
+
 async def top_k(
     variant: Variant, session: AsyncSession | None, seed_id: uuid.UUID, k: int = TOP_K
 ) -> list[uuid.UUID]:
@@ -91,6 +122,9 @@ async def top_k(
     only used by overlap."""
     if variant.approach == "overlap":
         return [r.album_id for r in await recommend_by_overlap(session, [seed_id], k)]
+    if variant.approach == "embeddings":
+        model = embedding_model(variant)
+        return [r.album_id for r in embeddings.recommend(model, [seed_id], k, alpha=variant.alpha)]
     model = tfidf_model(variant)
     return [r.album_id for r in recommend(model, [seed_id], k, alpha=variant.alpha)]
 

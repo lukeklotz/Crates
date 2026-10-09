@@ -34,9 +34,9 @@ from crate_backend.evaluation.store import (
 from crate_backend.evaluation.variants import (
     TOP_K,
     ModelNotBuilt,
+    model_version,
     parse_variant_names,
     run_variants,
-    tfidf_model,
 )
 from crate_backend.models.catalog import Album
 
@@ -232,9 +232,7 @@ async def _score(variant_names: str | None) -> None:
         runs = await run_variants(variants, session, seeds)
         returned = {a for by_seed in runs.values() for ranked in by_seed.values() for a in ranked}
         facts = await load_facts(session, returned)
-    model_versions = {
-        v.name: tfidf_model(v).metadata["model_version"] for v in variants if v.approach == "tfidf"
-    }
+    model_versions = {v.name: version for v in variants if (version := model_version(v))}
     # The owner's local date names the report file.
     today = datetime.now().astimezone().date()
     report = build_report(seeds, runs, grades, facts, model_versions=model_versions, today=today)
@@ -247,7 +245,9 @@ async def _score(variant_names: str | None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score variants against eval/judgments.jsonl.")
-    parser.add_argument("--variants", default=None, help="comma-separated; default: core three")
+    parser.add_argument(
+        "--variants", default=None, help="comma-separated; default: the five core variants"
+    )
     args = parser.parse_args()
     try:
         asyncio.run(_score(args.variants))
