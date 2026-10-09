@@ -9,7 +9,8 @@ from starlette.concurrency import run_in_threadpool
 
 from crate_backend.db.session import get_session
 from crate_backend.models.catalog import Album
-from crate_backend.recommend.model_store import get_tfidf_model
+from crate_backend.recommend.embeddings import recommend as recommend_by_embeddings
+from crate_backend.recommend.model_store import get_embedding_model, get_tfidf_model
 from crate_backend.recommend.overlap import recommend_by_overlap, seeds_have_terms
 from crate_backend.recommend.tfidf import recommend as recommend_by_tfidf
 
@@ -19,9 +20,10 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 class RecommendationRequest(BaseModel):
     album_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
     limit: int = Field(default=20, ge=1, le=50)
-    # "overlap" (Jaccard, Phase 3) or "tfidf" (Phase 4). The default changes
-    # only once the evaluation answer key picks a winner.
-    approach: Literal["overlap", "tfidf"] = "overlap"
+    # "overlap" (Jaccard, Phase 3), "tfidf" (Phase 4) or "embeddings"
+    # (Phase 5a). The default changes only once the evaluation answer key
+    # picks a winner.
+    approach: Literal["overlap", "tfidf", "embeddings"] = "overlap"
 
 
 class RecommendedAlbum(BaseModel):
@@ -38,7 +40,7 @@ class RecommendedAlbum(BaseModel):
 
 class RecommendationResponse(BaseModel):
     approach: str
-    # Build time of the TF-IDF model file that answered; null for overlap.
+    # Build time of the model file that answered; null for overlap.
     model_version: str | None
     results: list[RecommendedAlbum]
     reason: str | None
@@ -65,11 +67,14 @@ async def recommend(
         )
 
     model = None
-    if request.approach == "tfidf":
+    if request.approach != "overlap":
         # The first call reads the model file; keep that off the event loop.
-        model = await run_in_threadpool(get_tfidf_model)
+        # Look the loader up here, not at import time, so tests can swap it.
+        loader = get_tfidf_model if request.approach == "tfidf" else get_embedding_model
+        model = await run_in_threadpool(loader)
         if model is None:
-            raise HTTPException(status_code=503, detail="TF-IDF model not built")
+            name = "TF-IDF" if request.approach == "tfidf" else "Embedding"
+            raise HTTPException(status_code=503, detail=f"{name} model not built")
     model_version = model.metadata["model_version"] if model else None
 
     def respond(results: list[RecommendedAlbum], reason: str | None) -> RecommendationResponse:
@@ -88,10 +93,16 @@ async def recommend(
     else:
         if not any(seed_id in model.row_of for seed_id in seed_ids):
             return respond([], "seeds_not_in_model")
-        ranked = [
-            _Ranked(r.album_id, r.score, r.shared_terms, r.shared_text_terms)
-            for r in recommend_by_tfidf(model, seed_ids, request.limit)
-        ]
+        if request.approach == "tfidf":
+            ranked = [
+                _Ranked(r.album_id, r.score, r.shared_terms, r.shared_text_terms)
+                for r in recommend_by_tfidf(model, seed_ids, request.limit)
+            ]
+        else:
+            ranked = [
+                _Ranked(r.album_id, r.score, r.shared_terms, [])
+                for r in recommend_by_embeddings(model, seed_ids, request.limit)
+            ]
 
     albums = {
         album.id: album

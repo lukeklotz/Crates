@@ -8,7 +8,9 @@ from crate_backend.api.routes import recommendations as recommendations_route
 from crate_backend.db.session import get_session
 from crate_backend.main import app
 from crate_backend.models.catalog import Album, AlbumTag, Tag
+from crate_backend.recommend import embeddings
 from crate_backend.recommend.tfidf import AlbumDoc, build_model
+from tests.fakes import FakeEncoder
 
 pytestmark = pytest.mark.asyncio
 
@@ -255,3 +257,113 @@ async def test_albums_removed_since_the_model_was_built_are_skipped(client, db_s
 
     assert response.status_code == 200
     assert [r["id"] for r in response.json()["results"]] == [str(kept.id)]
+
+
+@pytest.fixture
+def use_embedding_model(monkeypatch):
+    """Serve the given model (or None: no model file built) for embeddings requests."""
+
+    def use(model):
+        monkeypatch.setattr(recommendations_route, "get_embedding_model", lambda: model)
+
+    return use
+
+
+def _embedding_model(*docs: AlbumDoc):
+    return embeddings.build_model(list(docs), FakeEncoder(dim=8))
+
+
+async def test_embeddings_rank_from_the_model_and_explain_with_shared_terms(
+    client, db_session, use_embedding_model
+):
+    seed = await _album(db_session, "Seed", "a")
+    match = await _album(db_session, "Match", release_year=1999)
+    model = _embedding_model(_doc(seed, "jazz", "bop"), _doc(match, "jazz", "bop"))
+    use_embedding_model(model)
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="embeddings")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approach"] == "embeddings"
+    assert body["model_version"] == model.metadata["model_version"]
+    assert body["reason"] is None
+    [result] = body["results"]
+    assert result["id"] == str(match.id)
+    assert result["release_year"] == 1999
+    assert sorted(result["shared_terms"]) == ["bop", "jazz"]
+    assert result["shared_text_terms"] == []
+
+
+async def test_embeddings_without_a_built_model_is_503(client, db_session, use_embedding_model):
+    seed = await _album(db_session, "Seed", "a")
+    use_embedding_model(None)
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="embeddings")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Embedding model not built"}
+
+
+async def test_embeddings_seeds_missing_from_the_model_explain_the_empty_result(
+    client, db_session, use_embedding_model
+):
+    seed = await _album(db_session, "New Seed", "a")
+    older = await _album(db_session, "Older Album", "b")
+    model = _embedding_model(_doc(older, "jazz"))
+    use_embedding_model(model)
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="embeddings")
+
+    assert response.json() == {
+        "approach": "embeddings",
+        "model_version": model.metadata["model_version"],
+        "results": [],
+        "reason": "seeds_not_in_model",
+    }
+
+
+async def test_embeddings_seeds_without_terms_keep_their_reason(
+    client, db_session, use_embedding_model
+):
+    seed = await _album(db_session, "Untagged Seed")
+    other = await _album(db_session, "Tagged Album", "a")
+    use_embedding_model(_embedding_model(_doc(seed), _doc(other, "jazz")))
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="embeddings")
+
+    assert response.json()["reason"] == "seeds_have_no_terms"
+
+
+async def test_embeddings_skip_albums_removed_since_the_build(
+    client, db_session, use_embedding_model
+):
+    seed = await _album(db_session, "Seed", "a")
+    kept = await _album(db_session, "Kept")
+    gone = AlbumDoc(album_id=uuid.uuid4(), title="Gone", term_votes={"jazz": 1})
+    use_embedding_model(_embedding_model(_doc(seed, "jazz"), _doc(kept, "jazz"), gone))
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="embeddings")
+
+    assert [r["id"] for r in response.json()["results"]] == [str(kept.id)]
+
+
+async def test_embeddings_use_the_known_seed_when_another_seed_is_unknown(
+    client, db_session, use_embedding_model
+):
+    known = await _album(db_session, "Known", "a")
+    newer = await _album(db_session, "Newer", "b")
+    match = await _album(db_session, "Match")
+    use_embedding_model(_embedding_model(_doc(known, "jazz"), _doc(match, "jazz")))
+
+    response = await _post(client, album_ids=[str(known.id), str(newer.id)], approach="embeddings")
+
+    assert [r["id"] for r in response.json()["results"]] == [str(match.id)]
+
+
+async def test_the_default_approach_is_still_overlap(client, db_session):
+    seed = await _album(db_session, "Seed", "a")
+
+    response = await _post(client, album_ids=[str(seed.id)])
+
+    assert response.json()["approach"] == "overlap"
