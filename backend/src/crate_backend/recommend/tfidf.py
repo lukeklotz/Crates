@@ -29,6 +29,8 @@ from sklearn.feature_extraction.text import (
     TfidfVectorizer,
 )
 
+from crate_backend.recommend.ranking import rank_rows
+
 DEFAULT_ALPHA = 0.6
 TOP_TERMS = 5
 
@@ -195,19 +197,7 @@ def _group_scores(model: TfidfModel, seed_rows: list[int], alpha: float) -> np.n
 
 def _rank(model: TfidfModel, rounded: np.ndarray, seed_rows: list[int], limit: int) -> list[int]:
     """Rows ordered by rounded score desc, then title, then album id."""
-    rounded = rounded.copy()
-    rounded[seed_rows] = 0.0
-    candidates = np.flatnonzero(rounded > 0)
-    if len(candidates) > limit:
-        # Keep everything tied with the limit-th score so the title/id
-        # tie-break, not np.partition, decides who makes the cut.
-        cutoff = np.partition(rounded[candidates], -limit)[-limit]
-        candidates = candidates[rounded[candidates] >= cutoff]
-    ordered = sorted(
-        (int(row) for row in candidates),
-        key=lambda row: (-rounded[row], model.titles[row], str(model.album_ids[row])),
-    )
-    return ordered[:limit]
+    return rank_rows(model.titles, model.album_ids, rounded, seed_rows, limit)
 
 
 def _seed_weights(matrix: sparse.csr_matrix, seed_rows: list[int]) -> np.ndarray:
