@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # scripts/build_tfidf_model.py and read by the API on first use.
     tfidf_model_path: str = str(_REPO_ROOT / "models" / "tfidf.joblib")
 
+    # Sentence-embedding recommender model file (Phase 5a), written by
+    # scripts/build_embedding_model.py and read by the API on first use.
+    embeddings_model_path: str = str(_REPO_ROOT / "models" / "embeddings.joblib")
+
     # Evaluation answer key (Phase 4, Milestone 3): seeds, judgments and
     # dated reports, committed to the repo.
     eval_dir: str = str(_REPO_ROOT / "eval")

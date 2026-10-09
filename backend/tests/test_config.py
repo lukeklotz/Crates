@@ -21,3 +21,14 @@ def test_tfidf_model_path_reads_from_env(monkeypatch):
 def test_eval_dir_defaults_to_repo_eval_folder():
     settings = Settings(_env_file=None)
     assert settings.eval_dir.endswith("/eval")
+
+
+def test_embeddings_model_path_defaults_to_repo_models_dir():
+    settings = Settings(_env_file=None)
+    assert settings.embeddings_model_path.endswith("/models/embeddings.joblib")
+
+
+def test_embeddings_model_path_reads_from_env(monkeypatch):
+    monkeypatch.setenv("CRATE_EMBEDDINGS_MODEL_PATH", "/tmp/elsewhere-emb.joblib")
+    settings = Settings(_env_file=None)
+    assert settings.embeddings_model_path == "/tmp/elsewhere-emb.joblib"

@@ -30,6 +30,11 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.7",
 ]
+# Only the embedding build script needs these (torch is a large download);
+# the API and the tests never import them.
+embeddings = [
+    "sentence-transformers>=3.0.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
