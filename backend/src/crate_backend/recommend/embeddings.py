@@ -20,7 +20,8 @@ from typing import Any, Protocol
 import joblib
 import numpy as np
 
-from crate_backend.recommend.tfidf import DEFAULT_ALPHA, AlbumDoc
+from crate_backend.recommend.ranking import rank_rows
+from crate_backend.recommend.tfidf import DEFAULT_ALPHA, TOP_TERMS, AlbumDoc
 
 CHUNK_WORDS = 250
 MIN_TAIL_WORDS = 50
@@ -162,3 +163,73 @@ def save_model(model: EmbeddingModel, path: Path) -> None:
 
 def load_model(path: Path) -> EmbeddingModel:
     return EmbeddingModel(**joblib.load(path))
+
+
+# Cosines of float32 vectors are exact to about 1e-7, so scores that should
+# tie are rounded to 6 decimals (TF-IDF's float64 scores use 9).
+SCORE_DECIMALS = 6
+
+
+@dataclass(frozen=True)
+class EmbeddingRecommendation:
+    album_id: uuid.UUID
+    score: float
+    shared_terms: list[str]
+
+
+def recommend(
+    model: EmbeddingModel,
+    seed_ids: list[uuid.UUID],
+    limit: int,
+    *,
+    alpha: float | None = None,
+) -> list[EmbeddingRecommendation]:
+    """Rank model albums related to the seeds. Seeds missing from the model
+    (added to the catalog after the build) contribute nothing; seeds are
+    never returned."""
+    seed_rows = sorted({model.row_of[s] for s in seed_ids if s in model.row_of})
+    if not seed_rows:
+        return []
+    scores = _group_scores(model, seed_rows, model.metadata["alpha"] if alpha is None else alpha)
+    rounded = np.round(scores, SCORE_DECIMALS)
+    seed_votes = _seed_votes(model, seed_rows)
+    return [
+        EmbeddingRecommendation(
+            album_id=model.album_ids[row],
+            score=float(rounded[row]),
+            shared_terms=_shared_terms(model.term_votes[row], seed_votes),
+        )
+        for row in rank_rows(model.titles, model.album_ids, rounded, seed_rows, limit)
+    ]
+
+
+def _cosines(vectors: np.ndarray, seed_rows: list[int]) -> np.ndarray:
+    """Cosine of every album with each seed, shape (seeds, albums). Rows are
+    unit length, so dot products are cosines."""
+    return (vectors @ vectors[seed_rows].T).T.astype(np.float64)
+
+
+def _group_scores(model: EmbeddingModel, seed_rows: list[int], alpha: float) -> np.ndarray:
+    tag = _cosines(model.tag_vectors, seed_rows)
+    text = _cosines(model.text_vectors, seed_rows)
+    both_have_text = model.has_text[seed_rows][:, None] & model.has_text[None, :]
+    return np.where(both_have_text, alpha * tag + (1 - alpha) * text, tag).sum(axis=0)
+
+
+def _seed_votes(model: EmbeddingModel, seed_rows: list[int]) -> dict[str, int]:
+    votes: dict[str, int] = {}
+    for row in seed_rows:
+        for term, count in model.term_votes[row].items():
+            votes[term] = votes.get(term, 0) + count
+    return votes
+
+
+def _shared_terms(candidate_votes: dict[str, int], seed_votes: dict[str, int]) -> list[str]:
+    """The candidate's terms that a seed also has, strongest first: summed
+    seed votes times the candidate's own votes, ties alphabetical."""
+    ranked = sorted(
+        (-seed_votes[term] * count, term)
+        for term, count in candidate_votes.items()
+        if term in seed_votes
+    )
+    return [term for _, term in ranked[:TOP_TERMS]]
