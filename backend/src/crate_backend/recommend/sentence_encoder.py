@@ -48,8 +48,10 @@ class SentenceTransformerEncoder:
         )
         self._model.max_seq_length = MAX_SEQ_LENGTH
         self._versions = {
-            "sentence_transformers_version": sentence_transformers.__version__,
-            "torch_version": torch.__version__,
+            # str(): torch.__version__ is a str subclass, which would pickle a
+            # reference to torch and make the API (no torch) unable to load the file.
+            "sentence_transformers_version": str(sentence_transformers.__version__),
+            "torch_version": str(torch.__version__),
         }
         self._truncated = 0
 
