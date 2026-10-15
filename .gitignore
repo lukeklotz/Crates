@@ -30,3 +30,8 @@ venv/
 # Personal notes (not for the repo)
 /docs/project-decisions.md
 
+# MusicBrainz database dumps (large, downloaded locally)
+/MusicBrainz/
+
+# Run logs
+*.log
