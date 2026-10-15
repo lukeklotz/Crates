@@ -1,0 +1,66 @@
+source: https://docs.typesafe.ai/introduction
+
+What is Jev? An LLM based approach to classifying stuff. Sort of like a really fancy if statement.
+
+Goal: Use it for Crates to do X
+
+Ideas: 
+    - parsing data from MusicBrainz before ML processing
+    - use it to find "types" of music that arent necessarily defined by genre or artist
+    - user can type a specific description, Jev can help decide which albums fit that description
+    - Jev can look at groups, classify the groups mood, type, feeling, etc, then use that info to make better recommendations
+
+Issues:
+    - Jev is brand new so there isnt much information on it yet
+    - I dont know exactly how its used
+
+What it actually is (from docs.typesafe.ai):
+    - Jev is TypeSafe's "System One model" - not a text-generation LLM, it returns
+      typed structured decisions directly (no parsing needed)
+    - Three primitives, mixable in a single call, evaluated in parallel:
+        - Choice: pick one option from a labeled set (up to 255) -> choice, probabilities, confidence
+        - Score: rate against an ordered rubric -> score, probabilities, confidence
+        - Noul: binary truth evaluation -> value 0-1
+    - Hierarchical classification is supported by chaining Choice calls level-by-level
+      (useful for taxonomies, e.g. genre -> subgenre -> mood)
+
+Integration:
+    - Python SDK: pip install typesafe-sdk (or uv add typesafe-sdk), requires Python >= 3.10
+    - Auth: reads TYPESAFE_API_KEY from env, defaults to model "jev-latest"
+    - Example usage:
+
+        from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+
+        client = TypeSafeClient()
+        response = client.system_one(
+            state="<input text, e.g. album/track metadata or a user description>",
+            questions={
+                "mood": Choice(
+                    instructions="What mood best fits this",
+                    criteria={"melancholic": "...", "upbeat": "...", "aggressive": "..."},
+                ),
+                "energy": Score(
+                    instructions="How high-energy is this",
+                    criteria=["Low", "Medium", "High"],
+                ),
+                "is_instrumental": Noul(
+                    instructions="The track has no vocals",
+                ),
+            },
+        )
+        response.answers["mood"].choice
+
+How this maps to the ideas above:
+    - "types of music not defined by genre" -> Choice with custom criteria we define,
+      independent of MusicBrainz genre tags
+    - "classify groups by mood/type/feeling" -> Choice/Score over album/track metadata,
+      run once at MusicBrainz ingestion time and store the result
+    - "user description -> matching albums" -> score candidate albums against the
+      user's free-text description as `state`, or precompute mood/type tags at
+      ingestion and match against those
+
+Next steps:
+    - Decide where in the Phase 2 MusicBrainz ingestion pipeline this call happens
+      (per-album during ingestion vs. on-demand at query time)
+    - Get a TYPESAFE_API_KEY and prototype one Choice call against real MusicBrainz data
+
