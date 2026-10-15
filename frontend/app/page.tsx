@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/sheet';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { NativeSelect } from '@/components/ui/native-select';
 import { Spinner } from '@/components/ui/spinner';
 
 type Item = {
@@ -58,10 +59,17 @@ type Recommendation = {
   shared_terms: string[];
   shared_text_terms: string[];
 };
+type Approach = 'overlap' | 'tfidf' | 'embeddings';
+const APPROACHES: { value: Approach; label: string }[] = [
+  { value: 'overlap', label: 'Overlap (genre/tag Jaccard)' },
+  { value: 'tfidf', label: 'TF-IDF (tags + Wikipedia text)' },
+  { value: 'embeddings', label: 'Embeddings' },
+];
 type RecommendationState = {
   status: 'loading' | 'ready' | 'error';
   results: Recommendation[];
   reason: string | null;
+  approach: Approach;
   // Sorted album ids the results were computed for; differs from the
   // group's current key when the group has changed since.
   seedKey: string;
@@ -69,6 +77,12 @@ type RecommendationState = {
 const seedKeyOf = (albumIds: string[]) =>
   [...new Set(albumIds)].sort().join(',');
 const uid = () => crypto.randomUUID();
+const youtubeSearchUrl = (title: string, artist: string | null) => {
+  const query = [title, artist?.trim(), 'full album']
+    .filter(Boolean)
+    .join(' ');
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+};
 export default function Home() {
   const [items, setItems] = useState<Item[]>([]),
     [groups, setGroups] = useState<Group[]>([]),
@@ -84,6 +98,7 @@ export default function Home() {
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(''),
     [dragging, setDragging] = useState(false);
+  const [approach, setApproach] = useState<Approach>('overlap');
   const [recommendations, setRecommendations] = useState<
     Record<string, RecommendationState>
   >({});
@@ -183,7 +198,7 @@ export default function Home() {
     setRecommendations((r) => ({
       ...r,
       [groupId]: {
-        ...(r[groupId] ?? { results: [], reason: null, seedKey }),
+        ...(r[groupId] ?? { results: [], reason: null, approach, seedKey }),
         status: 'loading',
       },
     }));
@@ -191,7 +206,7 @@ export default function Home() {
       const response = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ album_ids: albumIds }),
+        body: JSON.stringify({ album_ids: albumIds, approach }),
       });
       if (!response.ok) throw new Error();
       const data = (await response.json()) as {
@@ -204,6 +219,7 @@ export default function Home() {
           status: 'ready',
           results: data.results,
           reason: data.reason,
+          approach,
           seedKey,
         },
       }));
@@ -211,7 +227,7 @@ export default function Home() {
       setRecommendations((r) => ({
         ...r,
         [groupId]: {
-          ...(r[groupId] ?? { results: [], reason: null, seedKey }),
+          ...(r[groupId] ?? { results: [], reason: null, approach, seedKey }),
           status: 'error',
         },
       }));
@@ -294,7 +310,9 @@ export default function Home() {
     ? seedKeyOf(items.filter((i) => i.group === group.id).map((i) => i.albumId))
     : '';
   const groupRecs = group ? recommendations[group.id] : undefined;
-  const recsStale = !!groupRecs && groupRecs.seedKey !== groupSeedKey;
+  const recsStale =
+    !!groupRecs &&
+    (groupRecs.seedKey !== groupSeedKey || groupRecs.approach !== approach);
   function begin(e: React.PointerEvent, item: Item, resize?: string) {
     if ((e.target as HTMLElement).closest('button') && !resize) return;
     e.stopPropagation();
@@ -904,9 +922,22 @@ export default function Home() {
                 </div>
                 {recsStale && groupRecs?.status !== 'loading' && (
                   <p className="rec-note">
-                    Group changed. These results are for its earlier albums.
+                    {groupRecs.approach !== approach
+                      ? `These results came from ${groupRecs.approach}.`
+                      : 'Group changed. These results are for its earlier albums.'}
                   </p>
                 )}
+                <NativeSelect
+                  aria-label="Recommendation approach"
+                  value={approach}
+                  onChange={(e) => setApproach(e.target.value as Approach)}
+                >
+                  {APPROACHES.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {a.label}
+                    </option>
+                  ))}
+                </NativeSelect>
                 <button
                   className="primary find-button"
                   disabled={!groupSeedKey || groupRecs?.status === 'loading'}
@@ -957,6 +988,16 @@ export default function Home() {
                             </small>
                           )}
                         </span>
+                        <a
+                          className="rec-search"
+                          href={youtubeSearchUrl(r.title, r.artist_name)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`Search YouTube for ${r.title}${r.artist_name ? ` by ${r.artist_name}` : ''} (opens in a new tab)`}
+                          title="Search on YouTube"
+                        >
+                          <Search size={18} />
+                        </a>
                         <button
                           aria-label={`Add ${r.title} to sandbox`}
                           title="Add to sandbox"

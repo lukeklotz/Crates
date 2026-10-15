@@ -824,6 +824,17 @@ button:hover:not(:disabled) {
 .rec-result .rec-terms {
   color: var(--blue);
 }
+.rec-result .rec-search {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  color: inherit;
+}
+.rec-result .rec-search:hover {
+  filter: brightness(0.9);
+}
 .done-button {
   padding: 14px;
   margin-top: auto;
