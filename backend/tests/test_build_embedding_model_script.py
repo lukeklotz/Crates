@@ -37,3 +37,10 @@ def test_flags_are_read(tmp_path):
 def test_alpha_outside_zero_one_is_rejected():
     with pytest.raises(SystemExit):
         parse_args(["--alpha", "1.5"])
+
+
+def test_sound_filter_is_off_by_default_and_read_with_its_margin():
+    assert not parse_args([]).sound_filter
+    args = parse_args(["--sound-filter", "--sound-margin", "0.03"])
+
+    assert args.sound_filter and args.sound_margin == 0.03

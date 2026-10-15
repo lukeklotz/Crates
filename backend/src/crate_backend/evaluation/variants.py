@@ -3,8 +3,8 @@
 
 α is applied at scoring time, so tfidf-tags, tfidf-tags+text and the α
 sweep share one model file, and the two embedding variants (Phase 5a)
-share another. Variants that change the TF-IDF text block need their own
-file, built with the flags in `build_flags`.
+share another. Variants that change the text block need their own file,
+built with the flags in `build_flags`.
 """
 
 import uuid
@@ -27,15 +27,19 @@ TOP_K = 5
 class Variant:
     name: str
     approach: str  # "overlap" | "tfidf" | "embeddings"
-    # TF-IDF only. None means the default model file (settings.tfidf_model_path).
+    # None means the approach's default model file (settings.tfidf_model_path
+    # or settings.embeddings_model_path); otherwise a file next to it.
     model_file: str | None = None
     build_flags: tuple[str, ...] = ()
     alpha: float | None = None
 
     def model_path(self) -> Path:
-        if self.approach == "embeddings":
-            return Path(get_settings().embeddings_model_path)
-        default = Path(get_settings().tfidf_model_path)
+        settings = get_settings()
+        default = Path(
+            settings.embeddings_model_path
+            if self.approach == "embeddings"
+            else settings.tfidf_model_path
+        )
         return default if self.model_file is None else default.with_name(self.model_file)
 
 
@@ -57,6 +61,13 @@ VARIANTS = {
         _file_variant("tfidf-no-reception", "--no-reception"),
         _file_variant("tfidf-no-personnel", "--no-personnel"),
         _file_variant("tfidf-no-bigrams", "--no-bigrams"),
+        Variant(
+            "embed-tags+sound",
+            "embeddings",
+            model_file="embed-tags+sound.joblib",
+            build_flags=("--sound-filter",),
+            alpha=0.6,
+        ),
     )
 }
 CORE_VARIANTS = ("overlap", "tfidf-tags", "tfidf-tags+text", "embed-tags", "embed-tags+text")
@@ -97,10 +108,11 @@ def embedding_model(variant: Variant) -> embeddings.EmbeddingModel:
     path = variant.model_path()
     if path not in _embedding_models:
         if not path.exists():
+            flags = " ".join(variant.build_flags)
             raise ModelNotBuilt(
                 f"{variant.name}: no model at {path}. Build it with: uv sync --group "
                 f"embeddings && uv run python -m crate_backend.scripts.build_embedding_model "
-                f"--out {path}"
+                f"--out {path} {flags}".rstrip()
             )
         _embedding_models[path] = embeddings.load_model(path)
     return _embedding_models[path]

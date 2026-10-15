@@ -157,3 +157,15 @@ async def test_model_version_reports_the_file_that_answered(model_path):
         model_version(VARIANTS["embed-tags"])
         == embedding_model(VARIANTS["embed-tags"]).metadata["model_version"]
     )
+
+
+def test_the_sound_variant_has_its_own_embeddings_file(model_path):
+    variant = VARIANTS["embed-tags+sound"]
+
+    assert variant.approach == "embeddings" and variant.alpha == 0.6
+    assert variant.model_path() == model_path.with_name("embed-tags+sound.joblib")
+
+
+async def test_missing_sound_model_names_its_build_flag(model_path):
+    with pytest.raises(ModelNotBuilt, match="--sound-filter"):
+        await top_k(VARIANTS["embed-tags+sound"], None, S1)

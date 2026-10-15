@@ -4,7 +4,7 @@ Design: docs/superpowers/specs/2026-10-08-embedding-recommender-design.md
 
 Run with: uv run --group embeddings python -m crate_backend.scripts.build_embedding_model
           [--alpha 0.6] [--no-reception] [--no-personnel] [--device cpu|mps]
-          [--batch-size 64] [--out PATH]
+          [--batch-size 64] [--sound-filter [--sound-margin 0.0]] [--out PATH]
 
 Reads the same album documents as the TF-IDF build (genre/tag votes and the
 cleaned Wikipedia text), embeds them with bge-small-en-v1.5 and writes one
@@ -15,6 +15,7 @@ the backend after rebuilding. The first run downloads the encoder (~130 MB).
 
 import argparse
 import asyncio
+import dataclasses
 import time
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from crate_backend.recommend.embeddings import (
     save_model,
 )
 from crate_backend.recommend.sentence_encoder import EncoderUnavailable, SentenceTransformerEncoder
+from crate_backend.recommend.sound_filter import DEFAULT_MARGIN, filter_sound
 from crate_backend.recommend.tfidf import DEFAULT_ALPHA
 from crate_backend.scripts.build_tfidf_model import _catalog_source, _megabytes, load_album_docs
 
@@ -40,6 +42,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-personnel", action="store_true", help="drop Personnel/Credits sections"
+    )
+    parser.add_argument(
+        "--sound-filter",
+        action="store_true",
+        help="keep only article sentences that describe the sound",
+    )
+    parser.add_argument(
+        "--sound-margin",
+        type=float,
+        default=DEFAULT_MARGIN,
+        help="how much closer to the sound examples a kept sentence must be",
     )
     parser.add_argument("--device", default="cpu", help="cpu or mps (Apple GPU)")
     parser.add_argument("--batch-size", type=int, default=64, help="texts per encoder batch")
@@ -64,6 +77,16 @@ async def build(args: argparse.Namespace, encoder: Encoder | None = None) -> Non
     if encoder is None:
         encoder = SentenceTransformerEncoder(device=args.device, batch_size=args.batch_size)
     ready = time.perf_counter()
+    sound_metadata = {}
+    if args.sound_filter:
+        result = filter_sound([doc.text for doc in docs], encoder, args.sound_margin)
+        docs = [dataclasses.replace(d, text=t) for d, t in zip(docs, result.texts, strict=True)]
+        sound_metadata = {
+            "sound_margin": args.sound_margin,
+            "n_sentences": result.n_sentences,
+            "n_sentences_kept": result.n_kept,
+            "n_albums_emptied_by_filter": result.n_emptied,
+        }
     model = build_model(
         docs,
         encoder,
@@ -72,6 +95,8 @@ async def build(args: argparse.Namespace, encoder: Encoder | None = None) -> Non
             "catalog_source": _catalog_source(),
             "drop_reception": args.no_reception,
             "drop_personnel": args.no_personnel,
+            "sound_filter": args.sound_filter,
+            **sound_metadata,
         },
     )
     encoded = time.perf_counter()
@@ -84,6 +109,13 @@ async def build(args: argparse.Namespace, encoder: Encoder | None = None) -> Non
     n_texts = n_albums + meta["n_chunks"]
     matrix_bytes = model.tag_vectors.nbytes + model.text_vectors.nbytes
     print(f"Albums:          {n_albums:,} ({n_text:,} with text, {100 * n_text / n_albums:.0f}%)")
+    if args.sound_filter:
+        n_sent, n_kept = meta["n_sentences"], meta["n_sentences_kept"]
+        print(
+            f"Sound filter:    kept {n_kept:,} of {n_sent:,} sentences "
+            f"({100 * n_kept / max(n_sent, 1):.0f}%) at margin {args.sound_margin}; "
+            f"{meta['n_albums_emptied_by_filter']:,} albums lost all their text"
+        )
     print(f"Chunks embedded: {meta['n_chunks']:,}")
     print(f"Encode rate:     {n_texts / (encoded - ready):.0f} texts/s (tag lines + chunks)")
     print(f"Encoder:         {meta['encoder_name']} @ {meta['encoder_revision']}")
