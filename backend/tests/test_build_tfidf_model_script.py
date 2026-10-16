@@ -66,9 +66,38 @@ def test_parse_args_defaults():
     assert args.alpha == 0.6
     assert not args.no_bigrams and not args.no_reception and not args.no_personnel
     assert args.max_features is None and args.out is None
+    assert not args.sound_phrases
 
 
 @pytest.mark.parametrize("alpha", ["-0.1", "1.5"])
 def test_parse_args_rejects_alpha_outside_zero_to_one(alpha):
     with pytest.raises(SystemExit):
         parse_args(["--alpha", alpha])
+
+
+def test_sound_phrases_is_off_by_default_and_read_when_given():
+    assert not parse_args([]).sound_phrases
+    assert parse_args(["--sound-phrases", "--no-reception"]).sound_phrases
+
+
+@pytest.mark.parametrize("flags", [["--no-bigrams"], ["--max-features", "1000"]])
+def test_sound_phrases_rejects_article_only_flags(flags):
+    with pytest.raises(SystemExit):
+        parse_args(["--sound-phrases", *flags])
+
+
+def test_extract_phrases_reads_prose_and_joins_known_tags():
+    from crate_backend.recommend.tfidf import AlbumDoc
+    from crate_backend.scripts.build_tfidf_model import extract_phrases
+
+    docs = [
+        AlbumDoc(uuid.uuid4(), "A", {"acid jazz": 3}, text="It is an acid jazz record."),
+        AlbumDoc(uuid.uuid4(), "B", {}, text="Elvin Jones – drums"),
+        AlbumDoc(uuid.uuid4(), "C", {}, text=""),
+    ]
+
+    phrases, metadata = extract_phrases(docs)
+
+    assert phrases == [["acid jazz"], [], []]
+    assert metadata["spacy_version"] == "3.8.7"
+    assert metadata["spacy_model"] == "en_core_web_sm-3.8.0"

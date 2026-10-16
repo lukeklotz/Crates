@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # scripts/build_tfidf_model.py and read by the API on first use.
     tfidf_model_path: str = str(_REPO_ROOT / "models" / "tfidf.joblib")
 
+    # Sound-phrase TF-IDF model file, written by
+    # scripts/build_tfidf_model.py --sound-phrases and read by the API on
+    # first use for approach "phrases".
+    tfidf_phrases_model_path: str = str(_REPO_ROOT / "models" / "tfidf-phrases.joblib")
+
     # Sentence-embedding recommender model file (Phase 5a), written by
     # scripts/build_embedding_model.py and read by the API on first use.
     embeddings_model_path: str = str(_REPO_ROOT / "models" / "embeddings.joblib")
