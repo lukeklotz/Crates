@@ -29,11 +29,20 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.7",
+    # The sound-phrase tests run the real parser, so dev always has it.
+    { include-group = "phrases" },
 ]
 # Only the embedding build script needs these (torch is a large download);
 # the API and the tests never import them.
 embeddings = [
     "sentence-transformers>=3.0.0",
+]
+# The sound-phrase build (build_tfidf_model --sound-phrases) parses articles
+# with spaCy. Pinned to the versions the extraction rules were tuned on,
+# because parses (and so the rule tests) change between model versions.
+phrases = [
+    "spacy==3.8.7",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
 
 [tool.pytest.ini_options]
