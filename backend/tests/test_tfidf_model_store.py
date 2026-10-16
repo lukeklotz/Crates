@@ -41,3 +41,26 @@ def test_model_is_loaded_once_per_process(model_path):
     save_model(_tiny_model(), model_path)
 
     assert model_store.get_tfidf_model() is model_store.get_tfidf_model()
+
+
+@pytest.fixture
+def phrases_path(tmp_path, monkeypatch):
+    path = tmp_path / "tfidf-phrases.joblib"
+    monkeypatch.setattr(get_settings(), "tfidf_phrases_model_path", str(path))
+    monkeypatch.setattr(model_store, "_loaded", {})
+    return path
+
+
+def test_phrase_model_is_none_until_built(phrases_path):
+    assert model_store.get_tfidf_phrases_model() is None
+
+    save_model(_tiny_model(), phrases_path)
+
+    assert model_store.get_tfidf_phrases_model() is not None
+
+
+def test_loaders_keep_their_own_files(model_path, phrases_path):
+    save_model(_tiny_model(), phrases_path)
+
+    assert model_store.get_tfidf_model() is None
+    assert model_store.get_tfidf_phrases_model() is not None

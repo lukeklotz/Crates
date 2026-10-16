@@ -1,5 +1,5 @@
-"""The API process's copies of the model files: TF-IDF (Phase 4, Milestone 2)
-and sentence embeddings (Phase 5a)."""
+"""The API process's copies of the model files: TF-IDF (Phase 4, Milestone 2),
+sound-phrase TF-IDF, and sentence embeddings (Phase 5a)."""
 
 from pathlib import Path
 
@@ -15,7 +15,16 @@ def get_tfidf_model() -> TfidfModel | None:
     for the life of the process. None while the file doesn't exist. That
     answer isn't cached, so a first build needs no restart; a rebuild of an
     already-loaded model does."""
-    path = Path(get_settings().tfidf_model_path)
+    return _load_tfidf(Path(get_settings().tfidf_model_path))
+
+
+def get_tfidf_phrases_model() -> TfidfModel | None:
+    """The sound-phrase model at settings.tfidf_phrases_model_path, with the
+    same loading rules as get_tfidf_model."""
+    return _load_tfidf(Path(get_settings().tfidf_phrases_model_path))
+
+
+def _load_tfidf(path: Path) -> TfidfModel | None:
     if path not in _loaded:
         if not path.exists():
             return None

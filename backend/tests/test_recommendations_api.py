@@ -367,3 +367,95 @@ async def test_the_default_approach_is_still_overlap(client, db_session):
     response = await _post(client, album_ids=[str(seed.id)])
 
     assert response.json()["approach"] == "overlap"
+
+
+@pytest.fixture
+def use_phrases_model(monkeypatch):
+    """Serve the given model (or None: no model file built) for phrases requests."""
+
+    def use(model):
+        monkeypatch.setattr(recommendations_route, "get_tfidf_phrases_model", lambda: model)
+
+    return use
+
+
+def _phrase_model(docs_and_phrases):
+    docs = [doc for doc, _ in docs_and_phrases]
+    phrases = [phrases for _, phrases in docs_and_phrases]
+    return build_model(docs, min_df=1, max_df=1.0, phrases=phrases)
+
+
+async def test_phrases_rank_from_the_model_and_explain_with_phrases(
+    client, db_session, use_phrases_model
+):
+    seed = await _album(db_session, "Seed", "a")
+    match = await _album(db_session, "Match", release_year=1999)
+    model = _phrase_model(
+        [(_doc(seed, "jazz"), ["chunky groove"]), (_doc(match, "jazz"), ["chunky groove"])]
+    )
+    use_phrases_model(model)
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="phrases")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approach"] == "phrases"
+    assert body["model_version"] == model.metadata["model_version"]
+    [result] = body["results"]
+    assert result["id"] == str(match.id)
+    assert result["shared_terms"] == ["jazz"]
+    assert result["shared_text_terms"] == ["chunky groove"]
+
+
+async def test_phrases_without_a_built_model_is_503(client, db_session, use_phrases_model):
+    seed = await _album(db_session, "Seed", "a")
+    use_phrases_model(None)
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="phrases")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Sound-phrase model not built"}
+
+
+async def test_phrases_uses_its_own_model_not_the_tfidf_one(
+    client, db_session, use_model, use_phrases_model
+):
+    seed = await _album(db_session, "Seed", "a")
+    match = await _album(db_session, "Match")
+    use_model(None)
+    use_phrases_model(_phrase_model([(_doc(seed, "jazz"), []), (_doc(match, "jazz"), [])]))
+
+    phrases = await _post(client, album_ids=[str(seed.id)], approach="phrases")
+    tfidf = await _post(client, album_ids=[str(seed.id)], approach="tfidf")
+
+    assert phrases.status_code == 200
+    assert tfidf.status_code == 503
+
+
+async def test_phrases_seed_without_phrases_still_ranks_on_tags(
+    client, db_session, use_phrases_model
+):
+    seed = await _album(db_session, "Seed", "a")
+    match = await _album(db_session, "Match")
+    use_phrases_model(
+        _phrase_model([(_doc(seed, "jazz"), []), (_doc(match, "jazz"), ["warm sound"])])
+    )
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="phrases")
+
+    [result] = response.json()["results"]
+    assert result["id"] == str(match.id)
+    assert result["shared_text_terms"] == []
+
+
+async def test_phrases_seeds_missing_from_the_model_explain_the_empty_result(
+    client, db_session, use_phrases_model
+):
+    seed = await _album(db_session, "Seed", "a")
+    other = await _album(db_session, "Other")
+    use_phrases_model(_phrase_model([(_doc(other, "jazz"), ["warm sound"])]))
+
+    response = await _post(client, album_ids=[str(seed.id)], approach="phrases")
+
+    assert response.json()["results"] == []
+    assert response.json()["reason"] == "seeds_not_in_model"
