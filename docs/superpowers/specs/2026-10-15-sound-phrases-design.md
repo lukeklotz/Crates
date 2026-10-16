@@ -26,7 +26,7 @@ Pure functions in the style of `text_cleaning.py`:
 
 - **`prose_only(text) -> str`:** the text without credit lines. It reuses `_CREDIT_LINE` from `text_cleaning.py`; a matching line counts as a credit only when it is at most 160 characters, since longer lines are prose that happens to contain a dash.
 - **`extract(doc) -> list[str]`:** the sound phrases of one spaCy-parsed text. Phrases are normalized with `normalize_term` (so *pop-punk* becomes *pop punk*, matching tag spelling) and deduplicated in first-seen order.
-- **`extract_all(texts, nlp, batch_size=...) -> list[list[str]]`:** runs `nlp.pipe` over all texts and calls `extract` on each.
+- **`extract_all(texts, nlp, batch_size=32) -> list[list[str]]`:** runs `nlp.pipe` over all texts and calls `extract` on each.
 
 Extraction rules:
 
