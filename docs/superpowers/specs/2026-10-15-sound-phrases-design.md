@@ -31,7 +31,7 @@ Pure functions in the style of `text_cleaning.py`:
 Extraction rules:
 
 1. **Anchors.** A token is an anchor when it is a NOUN whose lemma is in one of two lists:
-   - `SPECIFIC_NOUNS` (e.g. sound, guitar, vocal, drum, bass, beat, riff, production, groove, melody, synth, piano, string, horn, rhythm, tempo, texture, atmosphere, mood, tone, arrangement, instrumentation, lyric, chorus, hook, sample, feel, timbre, distortion, reverb, ballad, solo) emit `"<descriptor> <noun>"`, so "guitar solo" survives whole.
+   - `SPECIFIC_NOUNS` (e.g. sound, guitar, vocal, drum, bass, beat, riff, production, groove, melody, synth, piano, string, horn, rhythm, tempo, texture, atmosphere, mood, tone, arrangement, instrumentation, lyric, chorus, hook, sample, feel, timbre, distortion, reverb, ballad, solo) emit `"<descriptor> <noun lemma>"`, so "guitar solo" survives whole and "acoustic guitars" and "acoustic guitar" are one phrase.
    - `GENERIC_NOUNS` (song, track, album, record, music, style, band, group, duo, trio, musician, singer, rapper, artist, ensemble, act) emit `"<descriptor>"` alone. Role nouns like *producer* and *songwriter* are excluded because their modifiers are roles ("record producer"), not sounds.
 
    The pronoun *it* also counts as a generic anchor when its head verb is a describing verb.
@@ -46,7 +46,7 @@ Extraction rules:
    - Adjacent descriptors (runs of 3, else 2) are joined only when the joined form is in `known_terms`, and a descriptor is joined with a compound directly before it on the same condition. So *acid jazz*, *hip hop*, *heavy metal* and *new wave* come through whole, but "loud punk band" gives *loud* and *punk*. A known-term join may use words that are ignored on their own (*new* in *new wave*).
 4. **Dropped:**
    - anchors or heads with a `neg` child, or with *no* as determiner, and anchors whose head is *lack* or *without* ("lacks melodic guitars", "without distorted guitars");
-   - descriptor tokens that are numbers, or that spaCy tags as a named entity of type NORP, GPE, LOC, ORG, PERSON, DATE, TIME, ORDINAL, CARDINAL, MONEY, PERCENT, QUANTITY, WORK_OF_ART, EVENT, FAC, PRODUCT or LANGUAGE;
+   - descriptor tokens that are numbers, or capitalized tokens that spaCy tags as a named entity (lowercase words are kept, because the small model also tags plain adjectives like *acoustic* as NORP) of type NORP, GPE, LOC, ORG, PERSON, DATE, TIME, ORDINAL, CARDINAL, MONEY, PERCENT, QUANTITY, WORK_OF_ART, EVENT, FAC, PRODUCT or LANGUAGE;
    - descriptors that aren't letters and hyphens, or are shorter than 3 characters;
    - descriptors any of whose hyphen parts is in `IGNORED_WORDS`. This list holds the probe round-2 list plus its leftovers: opening, closing, earlier, subsequent, latter, breakthrough, signature, executive, vinyl, concept, biggest, strongest, able, unable, potential, future, support, milestone, affair. A last tuning pass on the sample added: solo, backing, musical, music, recording, record, consecutive, numerous, album, and filler adverbs (also, just, even, mostly, very…).
 

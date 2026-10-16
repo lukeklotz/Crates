@@ -83,6 +83,14 @@ NDCG@5 is a 0-to-1 score for how good the top 5 picks are, with good picks near 
   - Known open issues from probe round 2:
     - multiword genres split apart (*acid* / *jazz*, a stray *hop*);
     - leftover position words (*opening, earlier, subsequent, executive*).
+- **Scoring bias against albums with phrases (open decision):**
+  - **The blend:** when both albums have phrases, the score is 0.6 × tag + 0.4 × phrase cosine. When either album has none, the score is the full tag cosine.
+  - **Why it bites:** phrase vectors are short (median 5), so phrase cosines are usually near 0. A candidate *with* phrases therefore scores about 0.6× its tag similarity, while one without keeps 1.0×.
+  - **Measured on the built model (200 random seeds):**
+    - only 29% of top-20 results have phrases, against 45% of the catalog;
+    - only about 25% of results show any shared phrase.
+  - **Not specific to this method:** the existing `tfidf` approach has the same bias.
+  - **Options:** blend one-sided pairs too (missing phrase cosine = 0), or use a separate α for phrases.
 - **Coverage and ranking risk:**
   - About half the catalog has no article, so the method can affect at most about 44% of albums.
   - Descriptive phrases come mostly from long articles about popular albums, which adds to the popularity skew the existing text methods already have.
