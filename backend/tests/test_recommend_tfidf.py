@@ -255,3 +255,88 @@ def test_metadata_records_how_the_model_was_built():
     assert metadata["text_vectorizer"]["ngram_range"] == [1, 2]
     assert metadata["sklearn_version"] == sklearn.__version__
     datetime.fromisoformat(metadata["model_version"])
+
+
+def test_phrases_are_whole_terms():
+    model = model_of(
+        album("A", "rock"),
+        album("B", "rock"),
+        phrases=[["crunchy guitars"], ["crunchy guitars", "warm sound"]],
+    )
+
+    assert sorted(model.text_terms) == ["crunchy guitars", "warm sound"]
+
+
+def test_a_phrase_in_only_one_album_is_dropped_by_min_df():
+    model = build_model(
+        [album("A", "rock"), album("B", "rock")],
+        phrases=[["crunchy guitars", "warm sound"], ["crunchy guitars"]],
+        min_df=2,
+        max_df=1.0,
+    )
+
+    assert list(model.text_terms) == ["crunchy guitars"]
+
+
+def test_albums_without_phrases_score_on_tags_alone():
+    seed = album("Seed", "jazz")
+    match = album("Match", "jazz")
+    for phrases in ([["warm sound"], []], [[], ["warm sound"]]):
+        model = model_of(seed, match, phrases=phrases)
+
+        [result] = recommend(model, [seed.album_id], 5)
+
+        assert result.score == pytest.approx(1.0)
+        assert result.shared_text_terms == []
+
+
+def test_shared_phrases_explain_the_match():
+    seed = album("Seed", "jazz")
+    model = model_of(
+        seed,
+        album("Match", "jazz"),
+        album("Other", "jazz"),
+        phrases=[["warm sound", "chunky groove"], ["chunky groove"], ["warm sound"]],
+    )
+
+    results = {r.album_id: r for r in recommend(model, [seed.album_id], 5)}
+
+    assert results[album("Match").album_id].shared_text_terms == ["chunky groove"]
+    assert results[album("Other").album_id].shared_text_terms == ["warm sound"]
+
+
+def test_metadata_records_the_text_source():
+    docs = [album("A", "jazz", text="modal"), album("B", "jazz", text="modal")]
+
+    article = model_of(*docs)
+    phrase = model_of(*docs, phrases=[["warm sound"], ["warm sound"]])
+
+    assert article.metadata["text_source"] == "article"
+    assert "text_vectorizer" in article.metadata
+    assert phrase.metadata["text_source"] == "sound_phrases"
+    assert phrase.metadata["phrase_vectorizer"] == {"min_df": 1, "max_df": 1.0}
+    assert "text_vectorizer" not in phrase.metadata
+
+
+def test_phrases_replace_the_article_text():
+    model = model_of(
+        album("A", "jazz", text="modal saxophone"),
+        album("B", "jazz", text="modal saxophone"),
+        phrases=[["warm sound"], ["warm sound"]],
+    )
+
+    assert list(model.text_terms) == ["warm sound"]
+
+
+def test_misaligned_phrases_are_rejected():
+    with pytest.raises(ValueError, match="2 albums"):
+        model_of(album("A", "jazz"), album("B", "jazz"), phrases=[["warm sound"]])
+
+
+def test_no_phrases_at_all_gives_a_tags_only_model():
+    seed = album("Seed", "jazz")
+    model = model_of(seed, album("Match", "jazz"), phrases=[[], []])
+
+    assert not model.has_text.any()
+    assert len(model.text_terms) == 0
+    assert len(recommend(model, [seed.album_id], 5)) == 1

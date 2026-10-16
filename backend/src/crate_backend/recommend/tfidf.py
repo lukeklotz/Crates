@@ -92,7 +92,12 @@ def build_model(
     max_df: float = 0.5,
     max_features: int | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    # Sound phrases per album, aligned with `docs`. When given they replace
+    # the article text as the second block (approach "phrases").
+    phrases: list[list[str]] | None = None,
 ) -> TfidfModel:
+    if phrases is not None and len(phrases) != len(docs):
+        raise ValueError(f"phrases has {len(phrases)} lists for {len(docs)} albums")
     text_params = {
         "ngram_range": ngram_range,
         "min_df": min_df,
@@ -100,13 +105,24 @@ def build_model(
         "max_features": max_features,
     }
     tag_terms, tag_matrix = _tag_block(docs)
-    text_terms, text_matrix = _text_block(docs, text_params)
+    if phrases is None:
+        text_terms, text_matrix = _text_block(docs, text_params)
+        text_metadata = {
+            "text_source": "article",
+            "text_vectorizer": {**text_params, "ngram_range": list(ngram_range)},
+        }
+    else:
+        text_terms, text_matrix = _phrase_block(phrases, min_df, max_df)
+        text_metadata = {
+            "text_source": "sound_phrases",
+            "phrase_vectorizer": {"min_df": min_df, "max_df": max_df},
+        }
     # A row that vectorized to nothing (only stop words) is no text at all.
     has_text = np.diff(text_matrix.indptr) > 0
     metadata = {
         "model_version": datetime.now(UTC).isoformat(timespec="seconds"),
         "alpha": alpha,
-        "text_vectorizer": {**text_params, "ngram_range": list(ngram_range)},
+        **text_metadata,
         "n_albums": len(docs),
         "n_with_text": int(has_text.sum()),
         "sklearn_version": sklearn.__version__,
@@ -153,6 +169,25 @@ def _text_block(
         (np.ones(len(rows)), (rows, range(len(rows)))), shape=(len(docs), len(rows))
     )
     return vectorizer.get_feature_names_out(), sparse.csr_matrix(placement @ fitted)
+
+
+def _phrase_block(
+    phrases: list[list[str]], min_df: float, max_df: float
+) -> tuple[np.ndarray, sparse.csr_matrix]:
+    """Each phrase is one term, counted once per album; then smoothed IDF and
+    L2 normalization, with the same document-frequency limits as text."""
+    if not any(phrases):
+        return np.array([], dtype=object), sparse.csr_matrix((len(phrases), 0))
+    vectorizer = TfidfVectorizer(
+        analyzer=_phrases_as_terms, binary=True, min_df=min_df, max_df=max_df
+    )
+    matrix = vectorizer.fit_transform(phrases)
+    return vectorizer.get_feature_names_out(), sparse.csr_matrix(matrix)
+
+
+def _phrases_as_terms(phrases: list[str]) -> list[str]:
+    """The vectorizer's analyzer: an album's phrases are already its terms."""
+    return phrases
 
 
 def recommend(
