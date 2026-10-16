@@ -59,10 +59,11 @@ type Recommendation = {
   shared_terms: string[];
   shared_text_terms: string[];
 };
-type Approach = 'overlap' | 'tfidf' | 'embeddings';
+type Approach = 'overlap' | 'tfidf' | 'phrases' | 'embeddings';
 const APPROACHES: { value: Approach; label: string }[] = [
   { value: 'overlap', label: 'Overlap (genre/tag Jaccard)' },
   { value: 'tfidf', label: 'TF-IDF (tags + Wikipedia text)' },
+  { value: 'phrases', label: 'TF-IDF (tags + sound phrases)' },
   { value: 'embeddings', label: 'Embeddings' },
 ];
 type RecommendationState = {
@@ -984,7 +985,11 @@ export default function Home() {
                           </small>
                           {r.shared_text_terms.length > 0 && (
                             <small className="rec-terms">
-                              Described alike: {r.shared_text_terms.join(', ')}
+                              {/* The approach that produced these results, not the picker's. */}
+                              {groupRecs.approach === 'phrases'
+                                ? 'Sounds alike'
+                                : 'Described alike'}
+                              : {r.shared_text_terms.join(', ')}
                             </small>
                           )}
                         </span>
