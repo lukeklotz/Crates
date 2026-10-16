@@ -1,6 +1,6 @@
 # Recommendation report: sound phrases
 
-> **Status: proposed, not built.** Everything below about extraction comes from two throwaway probes run on 2026-10-15 over the 300-album text-relevance sample (`eval/text-relevance/`). The scoring step is a design proposal and hasn't been graded.
+> **Status: built, not graded.** Served as `approach: "phrases"` and selectable in the frontend; build with `uv run --group phrases python -m crate_backend.scripts.build_tfidf_model --sound-phrases`. Extraction rules: [`sound_phrases.py`](../../backend/src/crate_backend/recommend/sound_phrases.py). No graded comparison yet.
 
 ## How it works
 
