@@ -25,29 +25,30 @@ This spec adds a recommendation approach that uses only the **sound-describing p
 Pure functions in the style of `text_cleaning.py`:
 
 - **`prose_only(text) -> str`:** the text without credit lines. It reuses `_CREDIT_LINE` from `text_cleaning.py`; a matching line counts as a credit only when it is at most 160 characters, since longer lines are prose that happens to contain a dash.
-- **`extract(doc) -> list[str]`:** the sound phrases of one spaCy-parsed text. Phrases are normalized with `normalize_term` (so *pop-punk* becomes *pop punk*, matching tag spelling) and deduplicated in first-seen order.
-- **`extract_all(texts, nlp, batch_size=32) -> list[list[str]]`:** runs `nlp.pipe` over all texts and calls `extract` on each.
+- **`extract(doc, known_terms=frozenset()) -> list[str]`:** the sound phrases of one spaCy-parsed text. Phrases are normalized with `normalize_term` (so *pop-punk* becomes *pop punk*, matching tag spelling) and deduplicated in first-seen order. `known_terms` is the catalog's set of normalized tag terms, used to join multiword descriptors (rule 3).
+- **`extract_all(texts, nlp, known_terms=frozenset(), batch_size=32) -> list[list[str]]`:** runs `nlp.pipe` over all texts and calls `extract` on each.
 
 Extraction rules:
 
 1. **Anchors.** A token is an anchor when it is a NOUN whose lemma is in one of two lists:
-   - `SPECIFIC_NOUNS` (e.g. sound, guitar, vocal, drum, bass, beat, riff, production, groove, melody, synth, piano, string, horn, rhythm, tempo, texture, atmosphere, mood, tone, arrangement, instrumentation, lyric, chorus, hook, sample, feel, timbre, distortion, reverb, ballad) emit `"<descriptor> <noun>"`.
-   - `GENERIC_NOUNS` (e.g. song, track, album, record, music, style, solo, band, group, duo, musician, singer, rapper, artist, songwriter, producer) emit `"<descriptor>"` alone.
+   - `SPECIFIC_NOUNS` (e.g. sound, guitar, vocal, drum, bass, beat, riff, production, groove, melody, synth, piano, string, horn, rhythm, tempo, texture, atmosphere, mood, tone, arrangement, instrumentation, lyric, chorus, hook, sample, feel, timbre, distortion, reverb, ballad, solo) emit `"<descriptor> <noun>"`, so "guitar solo" survives whole.
+   - `GENERIC_NOUNS` (song, track, album, record, music, style, band, group, duo, trio, musician, singer, rapper, artist, ensemble, act) emit `"<descriptor>"` alone. Role nouns like *producer* and *songwriter* are excluded because their modifiers are roles ("record producer"), not sounds.
 
    The pronoun *it* also counts as a generic anchor when its head verb is a describing verb.
 2. **Descriptors** of an anchor, each taken together with its `conj` chain ("lush and spacious"):
    - `amod` children of the anchor;
+   - an ADV `advmod` child directly before the anchor: the small model tags unfamiliar adjectives as adverbs ("jangly guitars"), while "guitars again" must not count;
    - `compound` children of a specific anchor, and NOUN `compound` children of a generic anchor;
    - `acomp` children of a linking-verb head (be, sound, feel, seem, become, remain, appear) when the anchor is its subject;
    - for a describing-verb head (call, describe, label, deem, consider, dub, characterize, term) with the anchor as object or passive subject: ADJ `oprd`/`acomp`/`xcomp`/`ccomp` children, and *as* + object (an ADJ object, or the object's `amod` children).
 3. **Multiword descriptors:**
    - Hyphenated words written without spaces are rebuilt whole (*electro-industrial*, *lo-fi*).
-   - A descriptor's own `compound` children are prefixed (*acid jazz*, *hip hop*).
+   - Adjacent descriptors (runs of 3, else 2) are joined only when the joined form is in `known_terms`, and a descriptor is joined with a compound directly before it on the same condition. So *acid jazz*, *hip hop*, *heavy metal* and *new wave* come through whole, but "loud punk band" gives *loud* and *punk*. A known-term join may use words that are ignored on their own (*new* in *new wave*).
 4. **Dropped:**
-   - anchors or heads with a `neg` child, or with *no* as determiner;
+   - anchors or heads with a `neg` child, or with *no* as determiner, and anchors whose head is *lack* or *without* ("lacks melodic guitars", "without distorted guitars");
    - descriptor tokens that are numbers, or that spaCy tags as a named entity of type NORP, GPE, LOC, ORG, PERSON, DATE, TIME, ORDINAL, CARDINAL, MONEY, PERCENT, QUANTITY, WORK_OF_ART, EVENT, FAC, PRODUCT or LANGUAGE;
    - descriptors that aren't letters and hyphens, or are shorter than 3 characters;
-   - descriptors any of whose hyphen parts is in `IGNORED_WORDS`. This list holds the probe round-2 list plus its leftovers: opening, closing, earlier, subsequent, latter, breakthrough, signature, executive, vinyl, concept, biggest, strongest, able, unable, potential, future, support, milestone, affair.
+   - descriptors any of whose hyphen parts is in `IGNORED_WORDS`. This list holds the probe round-2 list plus its leftovers: opening, closing, earlier, subsequent, latter, breakthrough, signature, executive, vinyl, concept, biggest, strongest, able, unable, potential, future, support, milestone, affair. A last tuning pass on the sample added: solo, backing, musical, music, recording, record, consecutive, numerous, album, and filler adverbs (also, just, even, mostly, very…).
 
 Every list and verb set is a commented module-level constant.
 
@@ -73,7 +74,7 @@ Every list and verb set is a commented module-level constant.
 
 ### 4. Build script: `scripts/build_tfidf_model.py`
 
-- **New flag:** `--sound-phrases`. The pipeline is `load_album_docs` → `prose_only` → `spacy.load("en_core_web_sm")` → `extract_all` → `build_model(phrases=...)`.
+- **New flag:** `--sound-phrases`. The pipeline is `load_album_docs` → `prose_only` → `spacy.load("en_core_web_sm")` → `extract_all` (with the catalog's tag terms as `known_terms`) → `build_model(phrases=...)`.
 - **Missing dependency:** spaCy is imported inside the flag's code path. If it isn't installed, the script exits with `sound phrases need spaCy. Run: uv sync --group phrases`.
 - **Output path:** a new setting, `tfidf_phrases_model_path` (default `<repo>/models/tfidf-phrases.joblib`), used when `--sound-phrases` is set and `--out` isn't.
 - **Flag combinations:** `--no-bigrams` and `--max-features` with `--sound-phrases` are argument errors. `--no-reception` and `--alpha` still apply.
