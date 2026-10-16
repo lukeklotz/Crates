@@ -25,7 +25,6 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet';
 import { Checkbox } from '@/components/ui/checkbox';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { NativeSelect } from '@/components/ui/native-select';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -61,10 +60,10 @@ type Recommendation = {
 };
 type Approach = 'overlap' | 'tfidf' | 'phrases' | 'embeddings';
 const APPROACHES: { value: Approach; label: string }[] = [
-  { value: 'overlap', label: 'Overlap (genre/tag Jaccard)' },
-  { value: 'tfidf', label: 'TF-IDF (tags + Wikipedia text)' },
-  { value: 'phrases', label: 'TF-IDF (tags + sound phrases)' },
-  { value: 'embeddings', label: 'Embeddings' },
+  { value: 'overlap', label: 'overlap (genre/tag jaccard)' },
+  { value: 'tfidf', label: 'tf-idf (tags + wikipedia text)' },
+  { value: 'phrases', label: 'tf-idf (tags + sound phrases)' },
+  { value: 'embeddings', label: 'embeddings' },
 ];
 type RecommendationState = {
   status: 'loading' | 'ready' | 'error';
@@ -126,7 +125,7 @@ export default function Home() {
       setGroups(prev.groups);
       setHistory((h) => h.slice(0, -1));
       setSelected([]);
-      setNotice('Last change undone.');
+      setNotice('undid your last change');
     }
   }
   function add(
@@ -154,7 +153,7 @@ export default function Home() {
       },
     ]);
     setSelected([id]);
-    setNotice(`${title} added.`);
+    setNotice(`added ${title}`);
   }
   function remove(id: string) {
     checkpoint();
@@ -178,7 +177,7 @@ export default function Home() {
       ...g,
       {
         id,
-        name: `GROUP ${String(g.length + 1).padStart(2, '0')}`,
+        name: `group ${String(g.length + 1).padStart(2, '0')}`,
         popularity: 'No preference',
       },
     ]);
@@ -186,7 +185,7 @@ export default function Home() {
       a.map((i) => (selected.includes(i.id) ? { ...i, group: id } : i)),
     );
     setActiveGroup(id);
-    setNotice('Group created. Open its arrow to set a discovery direction.');
+    setNotice('group made! open its arrow to find more like it');
   }
   async function findRecommendations(groupId: string) {
     const albumIds = [
@@ -249,10 +248,10 @@ export default function Home() {
       if (version === searchVersion.current) {
         setResults(data.results);
         if (!data.results.length)
-          setNotice('No albums found. Try another artist or album.');
+          setNotice('no albums found — try another artist or album');
       }
     } catch {
-      setNotice('Album search is unavailable. Try again in a moment.');
+      setNotice('search is taking a breather — try again in a moment');
     } finally {
       if (version === searchVersion.current) setLoading(false);
     }
@@ -374,25 +373,25 @@ export default function Home() {
   return (
     <main className="application">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Crate homepage">
+        <a className="brand" href="/" aria-label="Crates homepage">
           <span className="brand-mark">
             <i />
             <i />
             <i />
           </span>
-          CRATE<span className="brand-period">.</span>
+          crates
         </a>
         <div className="project-title">
           <span>/</span>
-          <h1>UNTITLED SANDBOX</h1>
-          <span className="session-dot" title="Session workspace" />
+          <h1>untitled sandbox</h1>
+          <span className="session-dot" title="session workspace" />
         </div>
         <button
           className="primary search-button"
           onClick={() => setPanel('search')}
         >
           <Search size={17} />
-          <span>SEARCH ALBUMS</span>
+          <span>search albums</span>
         </button>
       </header>
       <section className="board-shell" aria-label="Album sandbox">
@@ -407,13 +406,13 @@ export default function Home() {
           ))}
         </div>
         <div className="board-label">
-          WORKSPACE 01 <span>/</span> ALBUM STUDIES
+          workspace 01 <span>/</span> album studies
         </div>
         <div className="canvas-tools">
           <button
             className={mode === 'select' ? 'tool active' : 'tool'}
             aria-label="Select and move albums"
-            title="Select and move albums"
+            title="select and move albums"
             onClick={() => setMode('select')}
           >
             <MousePointer2 size={18} />
@@ -421,7 +420,7 @@ export default function Home() {
           <button
             className={mode === 'pan' ? 'tool active' : 'tool'}
             aria-label="Pan canvas"
-            title="Pan canvas"
+            title="pan canvas"
             onClick={() => setMode('pan')}
           >
             <Hand size={18} />
@@ -430,7 +429,7 @@ export default function Home() {
           <button
             className="tool"
             aria-label="Undo"
-            title="Undo"
+            title="undo"
             disabled={!history.length}
             onClick={undo}
           >
@@ -583,14 +582,14 @@ export default function Home() {
                     />
                     <div className="image-actions">
                       <button
-                        title="Duplicate"
+                        title="duplicate"
                         aria-label={`Duplicate ${item.title}`}
                         onClick={() => duplicate(item)}
                       >
                         <Copy size={14} />
                       </button>
                       <button
-                        title="Rotate 90°"
+                        title="rotate 90°"
                         aria-label={`Rotate ${item.title}`}
                         onClick={() => {
                           checkpoint();
@@ -606,7 +605,7 @@ export default function Home() {
                         <RotateCw size={14} />
                       </button>
                       <button
-                        title="Delete"
+                        title="delete"
                         aria-label={`Delete ${item.title}`}
                         onClick={() => remove(item.id)}
                       >
@@ -661,28 +660,28 @@ export default function Home() {
             <div className="empty-symbol">
               <Plus size={27} strokeWidth={1} />
             </div>
-            <p className="eyebrow">A PLACE TO CONNECT THE RECORDS.</p>
+            <p className="eyebrow">a place to connect your records</p>
             <h2>
-              START WITH
+              start with
               <br />
-              AN ALBUM.
+              an album
             </h2>
             <p>
-              Search for a record.
+              pick a record you love
               <br />
-              Arrange a few. Find your next direction.
+              add a few more and see where they lead
             </p>
             <button onClick={() => setPanel('search')}>
-              SEARCH ALBUMS <ArrowUpRight size={18} />
+              search albums <ArrowUpRight size={18} />
             </button>
           </div>
         )}
         {selected.length > 0 && (
           <div className="selection-bar">
-            <span>{String(selected.length).padStart(2, '0')} SELECTED</span>
+            <span>{String(selected.length).padStart(2, '0')} selected</span>
             <button onClick={createGroup}>
               <Layers size={16} />
-              CREATE GROUP
+              make a group
             </button>
             {selected.some((id) => items.find((i) => i.id === id)?.group) && (
               <button
@@ -695,7 +694,7 @@ export default function Home() {
                   );
                 }}
               >
-                UNGROUP
+                ungroup
               </button>
             )}
             <button aria-label="Deselect" onClick={() => setSelected([])}>
@@ -707,22 +706,22 @@ export default function Home() {
           <span className="crosshair">+</span>
           <span>
             {items.length
-              ? 'SHIFT + CLICK TO SELECT MULTIPLE'
-              : 'YOUR NEXT DISCOVERY STARTS HERE'}
+              ? 'shift + click to pick a few'
+              : 'your next favorite record starts here'}
           </span>
         </div>
         <div className="sheet-number">
-          CR—001 <span>↗</span>
+          cr—001 <span>↗</span>
         </div>
       </section>
       <footer className="statusbar">
         <div className="item-count">
           <span className="status-square" />
-          {String(items.length).padStart(2, '0')} ITEMS
+          {String(items.length).padStart(2, '0')} albums
         </div>
         <span className="footer-divider" />
         <div className="zoom-control">
-          <span>ZOOM</span>
+          <span>zoom</span>
           <button
             aria-label="Zoom out"
             disabled={zoom <= 50}
@@ -730,7 +729,7 @@ export default function Home() {
           >
             <Minus size={13} />
           </button>
-          <button title="Reset zoom" onClick={() => setZoom(100)}>
+          <button title="reset zoom" onClick={() => setZoom(100)}>
             {zoom}%
           </button>
           <button
@@ -744,13 +743,13 @@ export default function Home() {
         <span className="footer-divider" />
         <label className="check-control">
           <Checkbox checked={grid} onCheckedChange={(v) => setGrid(!!v)} />
-          GRID {grid ? 'ON' : 'OFF'}
+          grid {grid ? 'on' : 'off'}
         </label>
         <label className="check-control">
           <Checkbox checked={snap} onCheckedChange={(v) => setSnap(!!v)} />
-          SNAP {snap ? 'ON' : 'OFF'}
+          snap {snap ? 'on' : 'off'}
         </label>
-        <span className="session-label">SESSION WORKSPACE</span>
+        <span className="session-label">session workspace</span>
         <button
           className="clear-button"
           disabled={!items.length}
@@ -759,10 +758,10 @@ export default function Home() {
             setItems([]);
             setGroups([]);
             setSelected([]);
-            setNotice('Canvas cleared. Use Undo to restore it.');
+            setNotice('canvas cleared — hit undo to bring it back');
           }}
         >
-          CLEAR CANVAS <Trash2 size={14} />
+          clear canvas <Trash2 size={14} />
         </button>
       </footer>
       {notice && (
@@ -781,17 +780,17 @@ export default function Home() {
       >
         <SheetContent className="side-panel">
           <div className="panel-kicker">
-            CRATE / {panel === 'search' ? 'CATALOG' : 'DISCOVERY'}
+            crates / {panel === 'search' ? 'catalog' : 'discovery'}
           </div>
           <SheetTitle className="panel-title">
             {panel === 'search'
-              ? 'FIND A RECORD.'
-              : (group?.name ?? 'YOUR GROUP')}
+              ? 'find a record'
+              : (group?.name ?? 'your group')}
           </SheetTitle>
           <SheetDescription>
             {panel === 'search'
-              ? 'Search an album or artist, then add a record to your workspace.'
-              : 'Shape the direction of this group.'}
+              ? 'look up an album or artist and add it to your workspace'
+              : 'let’s find more records like these'}
           </SheetDescription>
           {panel === 'search' ? (
             <>
@@ -800,7 +799,7 @@ export default function Home() {
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Album or artist"
+                  placeholder="album or artist"
                   aria-label="Album or artist"
                   autoFocus
                 />
@@ -813,7 +812,7 @@ export default function Home() {
                 </button>
               </form>
               {loading ? (
-                <p className="mono">SEARCHING THE CATALOG…</p>
+                <p className="mono">digging through the crates…</p>
               ) : results.length ? (
                 <div className="search-results">
                   {results.map((r) => (
@@ -824,7 +823,7 @@ export default function Home() {
                         add(
                           r.id,
                           r.title,
-                          r.artist_name ?? 'Unknown artist',
+                          r.artist_name ?? 'unknown artist',
                           r.cover_art_url ?? '/album-placeholder.svg',
                         );
                         setPanel(null);
@@ -837,7 +836,7 @@ export default function Home() {
                       <span>
                         <strong>{r.title}</strong>
                         <small>
-                          {r.artist_name ?? 'Unknown artist'}
+                          {r.artist_name ?? 'unknown artist'}
                           {r.release_year ? ` / ${r.release_year}` : ''}
                         </small>
                       </span>
@@ -848,8 +847,8 @@ export default function Home() {
               ) : (
                 <div className="search-empty">
                   <SquareDashed size={32} strokeWidth={1} />
-                  <p>Start with a record you know.</p>
-                  <span>Try an album title or artist name.</span>
+                  <p>start with a record you know</p>
+                  <span>try an album title or artist name</span>
                 </div>
               )}
             </>
@@ -857,7 +856,7 @@ export default function Home() {
             group && (
               <>
                 <label className="field-label">
-                  GROUP NAME
+                  group name
                   <input
                     className="group-name"
                     value={group.name}
@@ -881,51 +880,13 @@ export default function Home() {
                     ))}
                 </div>
                 <div className="control-heading">
-                  <h3>POPULARITY</h3>
-                  <span>01 / DIRECTION</span>
-                </div>
-                <p className="control-description">
-                  How well-known should the recommendations be?
-                </p>
-                <RadioGroup
-                  className="popularity-options"
-                  value={group.popularity}
-                  disabled
-                  onValueChange={(value) =>
-                    setGroups((gs) =>
-                      gs.map((g) =>
-                        g.id === group.id
-                          ? { ...g, popularity: String(value) }
-                          : g,
-                      ),
-                    )
-                  }
-                >
-                  {[
-                    'No preference',
-                    'Lesser-known',
-                    'Somewhere in the middle',
-                    'Widely popular',
-                  ].map((p, n) => (
-                    <label key={p}>
-                      <RadioGroupItem value={p} />
-                      <span>{p}</span>
-                      <small>{['—', '▂', '▂▅', '▂▅█'][n]}</small>
-                    </label>
-                  ))}
-                </RadioGroup>
-                <p className="rec-note">
-                  Coming soon — popularity data is still being collected.
-                </p>
-                <div className="control-heading">
-                  <h3>RECOMMENDATIONS</h3>
-                  <span>02 / RESULTS</span>
+                  <h3>recommendations</h3>
                 </div>
                 {recsStale && groupRecs?.status !== 'loading' && (
                   <p className="rec-note">
                     {groupRecs.approach !== approach
-                      ? `These results came from ${groupRecs.approach}.`
-                      : 'Group changed. These results are for its earlier albums.'}
+                      ? `these came from ${groupRecs.approach}`
+                      : 'this group changed — these are for its earlier albums'}
                   </p>
                 )}
                 <NativeSelect
@@ -946,24 +907,24 @@ export default function Home() {
                 >
                   {groupRecs?.status === 'loading' ? (
                     <>
-                      <Spinner /> FINDING RECOMMENDATIONS…
+                      <Spinner /> finding recommendations…
                     </>
                   ) : recsStale ? (
-                    'UPDATE RECOMMENDATIONS'
+                    'update recommendations'
                   ) : (
-                    'FIND RECOMMENDATIONS'
+                    'find recommendations'
                   )}
                 </button>
                 {groupRecs?.status === 'error' && (
                   <p className="rec-note" role="alert">
-                    Recommendations are unavailable. Try again.
+                    recommendations aren’t available right now — try again
                   </p>
                 )}
                 {groupRecs?.status === 'ready' && !groupRecs.results.length && (
                   <p className="rec-note">
                     {groupRecs.reason === 'seeds_have_no_terms'
-                      ? 'No related albums found — these albums have few genres or tags in the catalog.'
-                      : 'No related albums found.'}
+                      ? 'nothing related yet — these albums don’t have many genres or tags'
+                      : 'nothing related yet'}
                   </p>
                 )}
                 {!!groupRecs?.results.length && (
@@ -977,18 +938,18 @@ export default function Home() {
                         <span>
                           <strong>{r.title}</strong>
                           <small>
-                            {r.artist_name ?? 'Unknown artist'}
+                            {r.artist_name ?? 'unknown artist'}
                             {r.release_year ? ` / ${r.release_year}` : ''}
                           </small>
                           <small className="rec-terms">
-                            Shares: {r.shared_terms.join(', ')}
+                            shares: {r.shared_terms.join(', ')}
                           </small>
                           {r.shared_text_terms.length > 0 && (
                             <small className="rec-terms">
                               {/* The approach that produced these results, not the picker's. */}
                               {groupRecs.approach === 'phrases'
-                                ? 'Sounds alike'
-                                : 'Described alike'}
+                                ? 'sounds alike'
+                                : 'described alike'}
                               : {r.shared_text_terms.join(', ')}
                             </small>
                           )}
@@ -999,18 +960,18 @@ export default function Home() {
                           target="_blank"
                           rel="noopener noreferrer"
                           aria-label={`Search YouTube for ${r.title}${r.artist_name ? ` by ${r.artist_name}` : ''} (opens in a new tab)`}
-                          title="Search on YouTube"
+                          title="search on youtube"
                         >
                           <Search size={18} />
                         </a>
                         <button
                           aria-label={`Add ${r.title} to sandbox`}
-                          title="Add to sandbox"
+                          title="add to sandbox"
                           onClick={() =>
                             add(
                               r.id,
                               r.title,
-                              r.artist_name ?? 'Unknown artist',
+                              r.artist_name ?? 'unknown artist',
                               r.cover_art_url ?? '/album-placeholder.svg',
                             )
                           }
@@ -1025,7 +986,7 @@ export default function Home() {
                   className="primary done-button"
                   onClick={() => setPanel(null)}
                 >
-                  KEEP EXPLORING <MoveUpRight size={17} />
+                  keep exploring <MoveUpRight size={17} />
                 </button>
               </>
             )
