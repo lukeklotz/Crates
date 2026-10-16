@@ -105,7 +105,14 @@ export default function Home() {
   const [history, setHistory] = useState<{ items: Item[]; groups: Group[] }[]>(
     [],
   );
+  const [marquee, setMarquee] = useState<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
   const board = useRef<HTMLDivElement>(null),
+    drawing = useRef<HTMLDivElement>(null),
     searchVersion = useRef(0);
   const gesture = useRef<{
     id: string;
@@ -116,6 +123,14 @@ export default function Home() {
     size: number;
     resize?: string;
   } | null>(null);
+  const groupGesture = useRef<{
+    x: number;
+    y: number;
+    origins: Map<string, { x: number; y: number }>;
+    moved: boolean;
+  } | null>(null);
+  // Set when a heading drag ends so the click that follows doesn't open the panel.
+  const groupDragged = useRef(false);
   const checkpoint = () =>
     setHistory((h) => [...h.slice(-19), { items, groups }]);
   function undo() {
@@ -169,8 +184,8 @@ export default function Home() {
     ]);
     setSelected([id]);
   }
-  function createGroup() {
-    if (!selected.length) return;
+  function createGroup(ids = selected) {
+    if (!ids.length) return;
     checkpoint();
     const id = uid();
     setGroups((g) => [
@@ -182,10 +197,11 @@ export default function Home() {
       },
     ]);
     setItems((a) =>
-      a.map((i) => (selected.includes(i.id) ? { ...i, group: id } : i)),
+      a.map((i) => (ids.includes(i.id) ? { ...i, group: id } : i)),
     );
+    setSelected(ids);
     setActiveGroup(id);
-    setNotice('group made! open its arrow to find more like it');
+    setNotice('group made! click its bar to find more like it');
   }
   async function findRecommendations(groupId: string) {
     const albumIds = [
@@ -366,6 +382,117 @@ export default function Home() {
       }),
     );
   }
+  // Drag on empty canvas to select every album the box touches.
+  function beginMarquee(e: React.PointerEvent<HTMLDivElement>) {
+    const el = e.currentTarget,
+      inner = drawing.current;
+    if (!inner) return;
+    const base = e.shiftKey ? selected : [];
+    let picked = base;
+    const toCanvas = (ev: { clientX: number; clientY: number }) => {
+      const r = inner.getBoundingClientRect();
+      return {
+        x: (ev.clientX - r.left) / (zoom / 100),
+        y: (ev.clientY - r.top) / (zoom / 100),
+      };
+    };
+    const start = toCanvas(e);
+    setSelected(base);
+    el.setPointerCapture(e.pointerId);
+    const moving = (ev: PointerEvent) => {
+      const p = toCanvas(ev);
+      setMarquee({ x0: start.x, y0: start.y, x1: p.x, y1: p.y });
+      const left = Math.min(start.x, p.x),
+        right = Math.max(start.x, p.x),
+        top = Math.min(start.y, p.y),
+        bottom = Math.max(start.y, p.y);
+      const hit = items
+        .filter(
+          (i) =>
+            i.x < right &&
+            i.x + i.size > left &&
+            i.y < bottom &&
+            i.y + i.size + 44 > top,
+        )
+        .map((i) => i.id);
+      picked = [...new Set([...base, ...hit])];
+      setSelected(picked);
+    };
+    const done = () => {
+      setMarquee(null);
+      el.removeEventListener('pointermove', moving);
+      el.removeEventListener('pointerup', release);
+      el.removeEventListener('pointercancel', done);
+    };
+    // A box around loose albums groups them straight away. If it touches a
+    // group, keep the selection so the bar can offer to ungroup instead.
+    const release = () => {
+      done();
+      const grouped = items.some((i) => picked.includes(i.id) && i.group);
+      if (picked.length > 1 && !grouped) createGroup(picked);
+    };
+    el.addEventListener('pointermove', moving);
+    el.addEventListener('pointerup', release);
+    el.addEventListener('pointercancel', done);
+  }
+  function beginGroup(e: React.PointerEvent, groupId: string) {
+    if (mode === 'pan' || e.button !== 0) return;
+    e.stopPropagation();
+    groupDragged.current = false;
+    groupGesture.current = {
+      x: e.clientX,
+      y: e.clientY,
+      origins: new Map(
+        items
+          .filter((i) => i.group === groupId)
+          .map((i) => [i.id, { x: i.x, y: i.y }]),
+      ),
+      moved: false,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function moveGroup(e: React.PointerEvent) {
+    const g = groupGesture.current;
+    if (!g) return;
+    let dx = (e.clientX - g.x) / (zoom / 100),
+      dy = (e.clientY - g.y) / (zoom / 100);
+    if (!g.moved) {
+      if (Math.hypot(dx, dy) < 4) return;
+      g.moved = true;
+      checkpoint();
+      setDragging(true);
+    }
+    if (snap) {
+      dx = Math.round(dx / 24) * 24;
+      dy = Math.round(dy / 24) * 24;
+    }
+    // Clamp the shared offset so the whole group stays on the board.
+    const members = items.filter((i) => g.origins.has(i.id));
+    const ox = members.map((i) => g.origins.get(i.id)!.x),
+      oy = members.map((i) => g.origins.get(i.id)!.y);
+    dx = Math.max(
+      24 - Math.min(...ox),
+      Math.min(1400 - Math.max(...members.map((i, n) => ox[n] + i.size)), dx),
+    );
+    dy = Math.max(
+      48 - Math.min(...oy),
+      Math.min(
+        900 - 40 - Math.max(...members.map((i, n) => oy[n] + i.size)),
+        dy,
+      ),
+    );
+    setItems((a) =>
+      a.map((i) => {
+        const o = g.origins.get(i.id);
+        return o ? { ...i, x: o.x + dx, y: o.y + dy } : i;
+      }),
+    );
+  }
+  function endGroup() {
+    groupDragged.current = !!groupGesture.current?.moved;
+    groupGesture.current = null;
+    setDragging(false);
+  }
   function end() {
     gesture.current = null;
     setDragging(false);
@@ -459,8 +586,11 @@ export default function Home() {
               el.addEventListener('pointerup', done);
             } else if (
               !(e.target as HTMLElement).closest('.album,.group-frame')
-            )
-              setSelected([]);
+            ) {
+              // Clicks on the board itself land on its scrollbars, not the canvas.
+              if (e.target === e.currentTarget || e.button !== 0) return;
+              beginMarquee(e);
+            }
           }}
         >
           <div
@@ -471,9 +601,21 @@ export default function Home() {
             }}
           >
             <div
+              ref={drawing}
               className="drawing-inner"
               style={{ transform: `scale(${zoom / 100})` }}
             >
+              {marquee && (
+                <div
+                  className="marquee"
+                  style={{
+                    left: Math.min(marquee.x0, marquee.x1),
+                    top: Math.min(marquee.y0, marquee.y1),
+                    width: Math.abs(marquee.x1 - marquee.x0),
+                    height: Math.abs(marquee.y1 - marquee.y0),
+                  }}
+                />
+              )}
               {groups.map((g) => {
                 const members = items.filter((i) => i.group === g.id);
                 if (!members.length) return null;
@@ -490,7 +632,16 @@ export default function Home() {
                   >
                     <button
                       className="group-heading"
+                      title="drag to move the group, click to open it"
+                      onPointerDown={(e) => beginGroup(e, g.id)}
+                      onPointerMove={moveGroup}
+                      onPointerUp={endGroup}
+                      onPointerCancel={endGroup}
                       onClick={() => {
+                        if (groupDragged.current) {
+                          groupDragged.current = false;
+                          return;
+                        }
                         setActiveGroup(g.id);
                         setPanel('group');
                       }}
@@ -679,10 +830,16 @@ export default function Home() {
         {selected.length > 0 && (
           <div className="selection-bar">
             <span>{String(selected.length).padStart(2, '0')} selected</span>
-            <button onClick={createGroup}>
-              <Layers size={16} />
-              make a group
-            </button>
+            {/* Regrouping albums that already share one group changes nothing. */}
+            {new Set(
+              selected.map((id) => items.find((i) => i.id === id)?.group),
+            ).size !== 1 ||
+            !items.find((i) => i.id === selected[0])?.group ? (
+              <button onClick={() => createGroup()}>
+                <Layers size={16} />
+                make a group
+              </button>
+            ) : null}
             {selected.some((id) => items.find((i) => i.id === id)?.group) && (
               <button
                 onClick={() => {
@@ -706,7 +863,7 @@ export default function Home() {
           <span className="crosshair">+</span>
           <span>
             {items.length
-              ? 'shift + click to pick a few'
+              ? 'drag a box or shift + click to pick a few'
               : 'your next favorite record starts here'}
           </span>
         </div>

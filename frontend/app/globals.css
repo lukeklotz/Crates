@@ -161,6 +161,7 @@ button:hover:not(:disabled) {
   position: absolute;
   inset: 27px 0 0 27px;
   overflow: auto;
+  user-select: none;
   scrollbar-width: thin;
   scrollbar-color: #00000044 transparent;
 }
@@ -533,6 +534,13 @@ button:hover:not(:disabled) {
 .pan {
   cursor: grab;
 }
+.marquee {
+  position: absolute;
+  z-index: 6;
+  border: 1px dashed var(--ink);
+  background: #0000000a;
+  pointer-events: none;
+}
 .group-frame {
   position: absolute;
   border: 1px dashed #00000088;
@@ -549,6 +557,11 @@ button:hover:not(:disabled) {
   font-family: var(--font-interface), monospace;
   font-size: 11px;
   pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.group-heading:active {
+  cursor: grabbing;
 }
 .group-heading small {
   opacity: 0.6;
