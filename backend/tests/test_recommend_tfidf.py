@@ -340,3 +340,16 @@ def test_no_phrases_at_all_gives_a_tags_only_model():
     assert not model.has_text.any()
     assert len(model.text_terms) == 0
     assert len(recommend(model, [seed.album_id], 5)) == 1
+
+
+def test_phrases_all_pruned_by_document_frequency_give_a_tags_only_model():
+    seed = album("Seed", "jazz")
+    model = build_model(
+        [seed, album("Match", "jazz")],
+        phrases=[["warm sound"], ["chunky groove"]],
+        min_df=2,
+        max_df=1.0,
+    )
+
+    assert not model.has_text.any()
+    assert len(recommend(model, [seed.album_id], 5)) == 1

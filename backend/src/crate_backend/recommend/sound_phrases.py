@@ -109,7 +109,9 @@ def extract(doc: Any, known_terms: frozenset[str] = frozenset()) -> list[str]:
         if anchor is None or _negated(token):
             continue
         for text in _join_known(_descriptors(token, anchor), known_terms):
-            phrase = text if anchor in GENERIC_NOUNS else f"{text} {token.text.lower()}"
+            # The noun's lemma, so "acoustic guitar" and "acoustic guitars"
+            # are one phrase.
+            phrase = text if anchor in GENERIC_NOUNS else f"{text} {anchor}"
             phrases[normalize_term(phrase)] = None
     return list(phrases)
 
@@ -224,7 +226,10 @@ def _descriptor_text(token: Any, ignore: bool = True) -> str | None:
     for joins that form a known term."""
     if token.pos_ not in ("ADJ", "ADV", "NOUN", "VERB") or token.like_num:
         return None
-    if token.ent_type_ in DROPPED_ENTITIES:
+    # Only capitalized words: the small model also tags plain adjectives
+    # ("an acoustic guitar") as entities, while names and nationalities
+    # ("Canadian", "Vancouver") are capitalized.
+    if token.ent_type_ in DROPPED_ENTITIES and token.text[:1].isupper():
         return None
     text = _hyphenated(token)
     if _WORD.fullmatch(text) is None or len(text) < 3:

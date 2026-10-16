@@ -12,7 +12,9 @@ Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
 """
 
 import math
+import numbers
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -176,13 +178,25 @@ def _phrase_block(
 ) -> tuple[np.ndarray, sparse.csr_matrix]:
     """Each phrase is one term, counted once per album; then smoothed IDF and
     L2 normalization, with the same document-frequency limits as text."""
-    if not any(phrases):
+    if not _any_phrase_kept(phrases, min_df, max_df):
+        # Without this, scikit-learn raises "no terms remain" after the
+        # whole catalog has been parsed.
         return np.array([], dtype=object), sparse.csr_matrix((len(phrases), 0))
     vectorizer = TfidfVectorizer(
         analyzer=_phrases_as_terms, binary=True, min_df=min_df, max_df=max_df
     )
     matrix = vectorizer.fit_transform(phrases)
     return vectorizer.get_feature_names_out(), sparse.csr_matrix(matrix)
+
+
+def _any_phrase_kept(phrases: list[list[str]], min_df: float, max_df: float) -> bool:
+    """Whether any phrase is within the document-frequency limits, read as
+    scikit-learn reads them: an int is a count, a float a proportion."""
+    n_albums = len(phrases)
+    low = min_df if isinstance(min_df, numbers.Integral) else min_df * n_albums
+    high = max_df if isinstance(max_df, numbers.Integral) else max_df * n_albums
+    albums_per_phrase = Counter(phrase for album in phrases for phrase in set(album))
+    return any(low <= count <= high for count in albums_per_phrase.values())
 
 
 def _phrases_as_terms(phrases: list[str]) -> list[str]:

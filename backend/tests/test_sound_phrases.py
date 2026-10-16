@@ -25,8 +25,8 @@ def phrases(nlp):
 
 def test_modifiers_of_music_nouns_and_their_conjuncts(phrases):
     assert phrases("The album pairs jangly guitars and breathy vocals.") == [
-        "jangly guitars",
-        "breathy vocals",
+        "jangly guitar",
+        "breathy vocal",
     ]
 
 
@@ -76,8 +76,8 @@ def test_names_places_ordinals_and_ignored_words_give_nothing(phrases):
 
 
 def test_only_an_adverb_right_before_the_noun_is_a_descriptor(phrases):
-    assert phrases("It features jangly guitars.") == ["jangly guitars"]
-    assert phrases("Crunchy guitars. Crunchy guitars again.") == ["crunchy guitars"]
+    assert phrases("It features jangly guitars.") == ["jangly guitar"]
+    assert phrases("Crunchy guitars. Crunchy guitars again.") == ["crunchy guitar"]
 
 
 def test_guitar_solo_is_a_specific_phrase(phrases):
@@ -100,3 +100,13 @@ def test_extract_all_keeps_one_list_per_text_including_empty_ones(nlp):
     texts = ["The record has a funk groove.", "", "Elvin Jones – drums"]
 
     assert extract_all([prose_only(t) for t in texts], nlp, KNOWN) == [["funk groove"], [], []]
+
+
+def test_singular_and_plural_nouns_give_the_same_phrase(phrases):
+    assert phrases("It has an acoustic guitar.") == phrases("It has acoustic guitars.")
+
+
+def test_a_lowercase_word_mistagged_as_an_entity_is_kept(phrases):
+    # The small model tags "acoustic" in "an acoustic guitar" as a NORP
+    # entity; real names and nationalities are capitalized.
+    assert phrases("The album has an acoustic guitar.") == ["acoustic guitar"]
