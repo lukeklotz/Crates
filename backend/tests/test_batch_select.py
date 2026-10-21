@@ -12,7 +12,6 @@ _SETTINGS = {
     "broad_weight": 0.3,
     "artist_free_albums": 3,
     "artist_decay": 0.5,
-    "broad_only_halfway": 1_000_000,
     "deprioritized_factor": 0.4,
     "deep_cut_max_votes": 6,
     "deep_cut_min_terms": 4,
@@ -126,18 +125,20 @@ def test_albums_without_artist_are_not_decayed():
     assert sorted(picked(select_batch(pool, [], config, 5))) == [f"n{i}" for i in range(5)]
 
 
-def test_broad_only_rewards_diminish():
-    config = make_config(broad_only_halfway=1)
-    pool = [album(f"broad{i}", {"rock": 15}, artist=f"art-{i}", config=config) for i in range(3)]
-    pool.append(album("specific", {"alpha": 1}, artist="art-s", config=config))
-    assert picked(select_batch(pool, [], config, 2)) == ["broad0", "specific"]
-
-
 def test_deprioritized_top_term_is_penalized():
     config = make_config()
     pool = [
         album("indie", {"alpha": 3, "indie rock": 20}, artist="art-1", config=config),
         album("plain", {"alpha": 1}, artist="art-2", config=config),
+    ]
+    assert picked(select_batch(pool, [], config, 1)) == ["plain"]
+
+
+def test_deprioritized_term_tied_for_main_tag_is_penalized():
+    config = make_config()
+    pool = [
+        album("tied", {"alpha": 3, "indie rock": 3, "zzz": 3}, artist="art-1", config=config),
+        album("plain", {"alpha": 2}, artist="art-2", config=config),
     ]
     assert picked(select_batch(pool, [], config, 1)) == ["plain"]
 

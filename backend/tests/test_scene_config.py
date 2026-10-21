@@ -14,6 +14,8 @@ def test_load_normalizes_terms():
     assert config.scene("a").terms == frozenset({"shibuya kei"})
     assert config.nondescriptive_terms == frozenset({"seen live"})
     assert config.deprioritized_terms == frozenset({"indie rock"})
+    assert config.cut_terms == frozenset({"black metal", "free jazz"})
+    assert config.scene("e").needs_company == frozenset({"ambient"})
 
 
 def test_one_element_years_are_open_ended():
@@ -71,7 +73,6 @@ def test_repository_scenes_file_loads():
     [
         ("deep_cut_share = 0.15", "deep_cut_share = 0.9", "add up"),
         ("live_share = 0.05", "live_share = -0.1", "live_share"),
-        ("broad_only_halfway = 200", "broad_only_halfway = 0", "broad_only_halfway"),
         ("artist_decay = 0.75", "artist_decay = 0", "artist_decay"),
         ("artist_decay = 0.75", "artist_decay = 1.5", "artist_decay"),
     ],

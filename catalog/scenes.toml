@@ -4,8 +4,11 @@
 #
 # Terms are MusicBrainz genre or tag names, normalized on load (lowercase,
 # hyphens to spaces), so "Shibuya-kei" and "shibuya kei" are the same term.
-# terms count fully; broad_terms count at broad_weight and an album matching
-# only broad terms is "broad-only" and gets diminishing returns.
+# An album joins a scene only with at least one of its terms. broad_terms
+# ("jazz", "electronic") add evidence at broad_weight but never place an
+# album on their own. needs_company terms place an album only alongside
+# another scene's term. An exclude term, like a cut term, only rules an
+# album out when it is the album's main tag (most votes; ties count).
 # years = [from, to] inclusive, or [from] for "to the present".
 # share = this scene's part of each batch's additions (shares sum to 100).
 
@@ -16,7 +19,6 @@ deep_cut_share = 0.15
 broad_weight = 0.3
 artist_free_albums = 3
 artist_decay = 0.75
-broad_only_halfway = 200
 deprioritized_factor = 0.4
 deep_cut_max_votes = 6
 deep_cut_min_terms = 4
@@ -35,6 +37,27 @@ nondescriptive_terms = [
 deprioritized_terms = [
   "indie rock", "garage rock revival", "post punk revival", "alternative rock",
   "rock", "pop rock",
+]
+
+# Dark, depressive or atonal: an album whose main tag is one of these is in
+# no scene. Decided with the owner on 2026-10-21; new age is kept on purpose.
+cut_terms = [
+  # metal
+  "black metal", "death metal", "doom metal", "funeral doom metal", "atmospheric black metal",
+  "depressive black metal", "gothic metal", "drone metal", "industrial metal",
+  "avant garde metal",
+  # noise and industrial
+  "noise", "rhythmic noise", "power noise", "harsh noise", "power electronics",
+  "industrial", "post industrial", "ebm", "electro industrial", "industrial rock",
+  # dark ambient and dark genres
+  "drone", "dark ambient", "ritual ambient", "dark folk", "neofolk", "horrorcore",
+  "witch house", "darksynth", "dark electro", "dark jazz", "dark wave", "darkwave",
+  "neoclassical dark wave", "neoclassical darkwave", "meditative", "meditation",
+  # experimental sound work
+  "lowercase", "sound art", "electroacoustic", "tape music",
+  # atonal
+  "free jazz", "avant garde jazz", "free improvisation", "avant garde", "no wave",
+  "noise rock", "musique concrète",
 ]
 
 # ---------------------------------------------------------------- center
@@ -57,7 +80,7 @@ share = 8
 terms = ["shibuya kei", "picopop", "twee pop", "japanese indie", "j indie", "bedroom pop",
          "lo fi", "electropop"]
 broad_terms = ["indie pop", "j pop", "pop", "electronic", "japanese"]
-requires_any = ["shibuya kei", "picopop", "japanese", "japanese indie", "j indie", "j pop"]
+requires_any = ["shibuya kei", "picopop", "japanese", "japanese indie", "j indie"]
 
 [[scene]]
 id = "space-age-lounge-chamber"
@@ -143,7 +166,7 @@ name = "Early electronic pop and library music"
 tier = "roots"
 years = [1965, 1982]
 share = 3
-terms = ["library music", "space age pop", "musique concrète", "radiophonic", "moog",
+terms = ["library music", "space age pop", "radiophonic", "moog",
          "synthpop", "synth pop", "exotica"]
 broad_terms = ["electronic", "easy listening", "experimental"]
 
@@ -224,7 +247,7 @@ name = "Post-punk and shoegaze"
 tier = "wider"
 years = [1978, 2010]
 share = 4
-terms = ["post punk", "shoegaze", "coldwave", "minimal wave", "no wave"]
+terms = ["post punk", "shoegaze", "coldwave", "minimal wave"]
 broad_terms = ["new wave", "indie rock"]
 exclude_terms = ["post punk revival"]
 
@@ -236,7 +259,9 @@ years = [1978, 2010]
 share = 4
 terms = ["ambient", "trip hop", "idm", "leftfield", "glitch", "illbient", "ambient techno"]
 broad_terms = ["electronic", "experimental", "electronica"]
-exclude_terms = ["dark ambient", "harsh noise", "power electronics"]
+# Ambient-only albums form an island with no path to the rest of the
+# collection; they join only with another scene's term.
+needs_company = ["ambient"]
 
 [[scene]]
 id = "house-techno"

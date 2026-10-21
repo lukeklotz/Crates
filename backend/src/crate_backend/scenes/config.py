@@ -32,6 +32,9 @@ class Scene:
     requires_any: frozenset[str]
     exclude_terms: frozenset[str]
     min_matched_terms: int = 1
+    # Terms that can't place an album here alone: when they are the only
+    # scene terms matched, the album also needs another scene's term.
+    needs_company: frozenset[str] = frozenset()
 
     def holds_year(self, year: int) -> bool:
         start, end = self.years
@@ -52,7 +55,6 @@ class SelectionSettings:
     broad_weight: float
     artist_free_albums: int
     artist_decay: float
-    broad_only_halfway: float
     deprioritized_factor: float
     deep_cut_max_votes: int
     deep_cut_min_terms: int
@@ -66,6 +68,9 @@ class SceneConfig:
     paths: tuple[ScenePath, ...]
     nondescriptive_terms: frozenset[str]
     deprioritized_terms: frozenset[str]
+    # Dark, depressive or atonal terms: an album whose main tag is one of
+    # these is in no scene.
+    cut_terms: frozenset[str] = frozenset()
 
     def scene(self, scene_id: str) -> Scene:
         for scene in self.scenes:
@@ -123,6 +128,7 @@ def _scene(raw: dict[str, Any]) -> Scene:
         requires_any=_terms(raw.get("requires_any")),
         exclude_terms=_terms(raw.get("exclude_terms")),
         min_matched_terms=int(raw.get("min_matched_terms", 1)),
+        needs_company=_terms(raw.get("needs_company")),
     )
 
 
@@ -135,8 +141,6 @@ def _check_settings(settings: SelectionSettings) -> None:
             raise SceneConfigError(f"[settings]: {name} must not be negative")
     if sum(getattr(settings, name) for name in shares) > 1:
         raise SceneConfigError(f"[settings]: {', '.join(shares)} must add up to at most 1")
-    if settings.broad_only_halfway <= 0:
-        raise SceneConfigError("[settings]: broad_only_halfway must be above 0")
     if not 0 < settings.artist_decay <= 1:
         raise SceneConfigError("[settings]: artist_decay must be above 0 and at most 1")
 
@@ -146,6 +150,7 @@ def parse_scene_config(text: str) -> SceneConfig:
     raw_settings = dict(data.get("settings") or {})
     nondescriptive = raw_settings.pop("nondescriptive_terms", [])
     deprioritized = raw_settings.pop("deprioritized_terms", [])
+    cut = raw_settings.pop("cut_terms", [])
     try:
         settings = SelectionSettings(**raw_settings)
     except TypeError as error:
@@ -176,6 +181,7 @@ def parse_scene_config(text: str) -> SceneConfig:
         paths=tuple(paths),
         nondescriptive_terms=_terms(nondescriptive),
         deprioritized_terms=_terms(deprioritized),
+        cut_terms=_terms(cut),
     )
 
 

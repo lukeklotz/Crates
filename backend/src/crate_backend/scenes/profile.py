@@ -45,7 +45,6 @@ class ProfileCounts:
     scene_studio: Counter = field(default_factory=Counter)
     scene_live: Counter = field(default_factory=Counter)
     scene_in_catalog: Counter = field(default_factory=Counter)
-    scene_broad_only: Counter = field(default_factory=Counter)
     scene_deep_cut: Counter = field(default_factory=Counter)
     scene_connectors: Counter = field(default_factory=Counter)
     scene_artists: defaultdict = field(default_factory=lambda: defaultdict(Counter))
@@ -88,7 +87,6 @@ class ProfileCounts:
         self.scene_artists[scene][artist] += 1
         self.scene_terms[scene].update(match.matched_terms)
         (self.scene_live if pool_album.is_live else self.scene_studio)[scene] += 1
-        self.scene_broad_only[scene] += match.broad_only
         self.scene_deep_cut[scene] += is_deep_cut(pool_album, self.settings)
         self.scene_connectors[scene] += bool(match.connects_to)
         if in_catalog:
@@ -149,8 +147,8 @@ def render_profile(
         "",
         "| Scene | Tier | Years | Studio | Live | In catalog | Not in catalog | "
         + " | ".join(f"+{t // 1000}k budget" for t in BATCH_TARGETS)
-        + " | Broad-only | Deep-cut candidates | Connector candidates | Artists | Top artists | Top terms |",
-        "|---" * (15 + len(BATCH_TARGETS) - 2) + "|",
+        + " | Deep-cut candidates | Connector candidates | Artists | Top artists | Top terms |",
+        "|---" * (14 + len(BATCH_TARGETS) - 2) + "|",
     ]
     for scene in config.scenes:
         sid = scene.id
@@ -164,7 +162,7 @@ def render_profile(
             f"| {sid} | {scene.tier} | {_years(scene.years)} | {counts.scene_studio[sid]:,} | "
             f"{counts.scene_live[sid]:,} | {counts.scene_in_catalog[sid]:,} | "
             f"{total - counts.scene_in_catalog[sid]:,} | {budgets} | "
-            f"{counts.scene_broad_only[sid]:,} | {counts.scene_deep_cut[sid]:,} | "
+            f"{counts.scene_deep_cut[sid]:,} | "
             f"{counts.scene_connectors[sid]:,} | {len(counts.scene_artists[sid]):,} | "
             f"{top_artists} | {top_terms} |"
         )

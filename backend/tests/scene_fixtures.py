@@ -14,13 +14,13 @@ deep_cut_share = 0.15
 broad_weight = 0.3
 artist_free_albums = 3
 artist_decay = 0.75
-broad_only_halfway = 200
 deprioritized_factor = 0.4
 deep_cut_max_votes = 6
 deep_cut_min_terms = 4
 deep_cut_min_scene_terms = 2
 nondescriptive_terms = ["Seen Live"]
 deprioritized_terms = ["Indie Rock"]
+cut_terms = ["Black Metal", "free jazz"]
 
 [[scene]]
 id = "a"
@@ -55,6 +55,15 @@ share = 1
 terms = ["shoegaze", "dream pop"]
 broad_terms = ["rock"]
 exclude_terms = ["post punk revival"]
+
+[[scene]]
+id = "e"
+name = "E"
+tier = "wider"
+years = [1978, 2010]
+share = 1
+terms = ["ambient", "idm"]
+needs_company = ["ambient"]
 
 [[path]]
 name = "a to c"

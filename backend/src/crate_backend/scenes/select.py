@@ -5,8 +5,8 @@ reserved slices: live albums, connectors to neighboring scenes, and deep
 cuts (little-known but well-described albums). Then the open slice takes
 the strongest remaining studio albums. Within a slice albums are taken
 greedily by gain, which is tag evidence reduced for an artist's later
-albums, for a scene's many broad-tag-only albums, and for albums led by a
-deprioritized term. Gains only fall as albums are taken, so a lazy greedy
+albums and for albums whose main tag is a deprioritized term. Gains only
+fall as albums are taken, so a lazy greedy
 (re-score the top of the heap, take it if it still leads) gives the same
 result as re-scoring everything.
 
@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from crate_backend.scenes.catalog import CatalogAlbum
 from crate_backend.scenes.config import SceneConfig, SelectionSettings
+from crate_backend.scenes.matching import main_terms
 from crate_backend.scenes.pool import PoolAlbum
 
 SLICES = ("live", "connector", "deep", "open")
@@ -89,16 +90,11 @@ def _artist_factor(albums_so_far: int, settings: SelectionSettings) -> float:
     return settings.artist_decay ** (albums_so_far - settings.artist_free_albums + 1)
 
 
-def _top_term(album: PoolAlbum) -> str:
-    return max(album.terms.items(), key=lambda item: (item[1], item[0]))[0]
-
-
 class _Selection:
     def __init__(self, catalog: list[CatalogAlbum], config: SceneConfig) -> None:
         self.config = config
         self.settings = config.settings
         self.artists = Counter(c.primary_artist_id for c in catalog if c.primary_artist_id)
-        self.broad_only = Counter(c.match.home for c in catalog if c.match and c.match.broad_only)
         self.taken: set[str] = set()
         self.picks: list[Pick] = []
 
@@ -107,9 +103,7 @@ class _Selection:
         gain = match.evidence
         if album.primary_artist_id:
             gain *= _artist_factor(self.artists[album.primary_artist_id], self.settings)
-        if match.broad_only:
-            gain /= 1 + self.broad_only[match.home] / self.settings.broad_only_halfway
-        if _top_term(album) in self.config.deprioritized_terms:
+        if self.config.deprioritized_terms & main_terms(album.terms):
             gain *= self.settings.deprioritized_factor
         return gain
 
@@ -141,8 +135,6 @@ class _Selection:
         self.taken.add(album.musicbrainz_id)
         if album.primary_artist_id:
             self.artists[album.primary_artist_id] += 1
-        if album.match.broad_only:
-            self.broad_only[album.match.home] += 1
         self.picks.append(
             Pick(album.musicbrainz_id, scene_id, slice_name, gain, album.match.evidence)
         )

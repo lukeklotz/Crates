@@ -47,21 +47,47 @@ def test_classify_without_scene_terms_is_none():
     assert classify({"polka": 3}, 1991, config) is None
 
 
-def test_exclude_term_removes_scene():
-    assert classify({"shoegaze": 3, "post punk revival": 1}, 1991, config) is None
+def test_exclude_term_as_main_tag_removes_scene():
+    assert classify({"shoegaze": 3, "post punk revival": 3}, 1991, config) is None
 
 
-def test_broad_only_match():
-    match = classify({"rock": 4}, 1991, config)
-    assert match.home == "d"
-    assert match.broad_only is True
-    assert match.matched_terms == ("rock",)
+def test_exclude_term_below_main_tag_is_ignored():
+    assert classify({"shoegaze": 5, "post punk revival": 1}, 1991, config).home == "d"
 
 
-def test_specific_match_is_not_broad_only():
+def test_broad_terms_alone_place_no_album():
+    assert classify({"rock": 4}, 1991, config) is None
+
+
+def test_broad_terms_add_evidence_to_a_specific_match():
     match = classify({"shoegaze": 2, "rock": 4}, 1991, config)
-    assert match.broad_only is False
     assert match.matched_terms == ("rock", "shoegaze")
+    assert match.evidence == pytest.approx(math.log2(3) + 0.3 * math.log2(5))
+
+
+def test_cut_term_as_main_tag_removes_album_from_every_scene():
+    assert classify({"shoegaze": 2, "black metal": 5}, 1991, config) is None
+
+
+def test_cut_term_tied_for_main_tag_removes_album():
+    assert classify({"shoegaze": 3, "black metal": 3}, 1991, config) is None
+
+
+def test_cut_term_below_main_tag_is_ignored():
+    assert classify({"shoegaze": 19, "black metal": 3}, 1991, config).home == "d"
+
+
+def test_company_term_alone_places_no_album():
+    assert classify({"ambient": 3}, 1995, config) is None
+    assert classify({"ambient": 3, "electronic": 2}, 1995, config) is None
+
+
+def test_company_term_with_another_scenes_term_places_album():
+    assert classify({"ambient": 3, "shoegaze": 1}, 1995, config).home == "e"
+
+
+def test_company_term_with_an_own_other_term_places_album():
+    assert classify({"ambient": 3, "idm": 1}, 1995, config).home == "e"
 
 
 def test_home_is_highest_evidence_and_ties_go_to_earlier_scene():

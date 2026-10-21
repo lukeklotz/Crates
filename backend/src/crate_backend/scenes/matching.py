@@ -21,8 +21,6 @@ _YEAR_TERM = re.compile(r"^\d{2,4}s?$")
 class SceneMatch:
     home: str
     evidence: float
-    # True when only the home scene's broad terms ("rock", "jazz") matched.
-    broad_only: bool
     matched_terms: tuple[str, ...]
     # Scenes next to home on a path whose terms the album also carries.
     connects_to: tuple[str, ...]
@@ -43,6 +41,14 @@ def descriptive_terms(
     }
 
 
+def main_terms(terms: dict[str, int]) -> set[str]:
+    """The album's main tags: every term with the top vote count, so ties all count."""
+    if not terms:
+        return set()
+    top = max(terms.values())
+    return {term for term, votes in terms.items() if votes == top}
+
+
 def _matched(terms: dict[str, int], scene: Scene) -> list[str]:
     return sorted(t for t in terms if t in scene.terms or t in scene.broad_terms)
 
@@ -54,11 +60,20 @@ def scene_evidence(terms: dict[str, int], scene: Scene, broad_weight: float) -> 
     )
 
 
-def _terms_fit(terms: dict[str, int], scene: Scene) -> bool:
-    """Every rule except the year window."""
+def _terms_fit(terms: dict[str, int], scene: Scene, config: SceneConfig) -> bool:
+    """Every rule except the year window. Broad terms add evidence but never
+    place an album on their own, and an excluded term only rules an album
+    out when it is one of the album's main tags."""
+    specific = [t for t in terms if t in scene.terms]
+    if not specific:
+        return False
     if scene.requires_any and not any(t in terms for t in scene.requires_any):
         return False
-    if any(t in terms for t in scene.exclude_terms):
+    if scene.exclude_terms & main_terms(terms):
+        return False
+    if set(specific) <= scene.needs_company and not any(
+        t in other.terms for other in config.scenes if other.id != scene.id for t in terms
+    ):
         return False
     return len(_matched(terms, scene)) >= scene.min_matched_terms
 
@@ -66,11 +81,11 @@ def _terms_fit(terms: dict[str, int], scene: Scene) -> bool:
 def classify(terms: dict[str, int], year: int | None, config: SceneConfig) -> SceneMatch | None:
     """The album's home scene (highest evidence; ties go to the scene listed
     first), or None when no scene's year window and term rules fit."""
-    if year is None:
+    if year is None or config.cut_terms & main_terms(terms):
         return None
     best: tuple[Scene, float] | None = None
     for scene in config.scenes:
-        if not scene.holds_year(year) or not _terms_fit(terms, scene):
+        if not scene.holds_year(year) or not _terms_fit(terms, scene, config):
             continue
         evidence = scene_evidence(terms, scene, config.settings.broad_weight)
         if best is None or evidence > best[1]:
@@ -80,18 +95,15 @@ def classify(terms: dict[str, int], year: int | None, config: SceneConfig) -> Sc
     home, evidence = best
     matched = _matched(terms, home)
     # A neighbor's year window is ignored: a 1983 funk/electro record still
-    # connects funk to early hip hop. Its broad terms alone don't count, or
-    # every album tagged "electronic" would connect every electronic scene.
+    # connects funk to early hip hop.
     connects_to = sorted(
         neighbor
         for neighbor in config.neighbors(home.id)
-        if _terms_fit(terms, config.scene(neighbor))
-        and any(t in config.scene(neighbor).terms for t in terms)
+        if _terms_fit(terms, config.scene(neighbor), config)
     )
     return SceneMatch(
         home=home.id,
         evidence=evidence,
-        broad_only=not any(t in home.terms for t in matched),
         matched_terms=tuple(matched),
         connects_to=tuple(connects_to),
     )

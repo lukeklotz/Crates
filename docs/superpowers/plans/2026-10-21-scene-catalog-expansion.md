@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Grow Crate's 25,000-album catalog toward 100–150k by pulling albums from named scenes that have entry points, depth and connectors to nearby scenes. Albums are added in measured batches (+25k, then +50k), and recommendations are compared after each batch.
+**Goal:** Grow Crate's 25,000-album catalog by pulling albums from named scenes that have entry points, depth and connectors to nearby scenes (originally aimed at 100–150k; after the first profile the owner accepted about 60–75k, see Checkpoint decisions). Albums are added in measured batches (+15k, then everything left), and recommendations are compared after each batch.
 
 **Architecture:** A hand-edited `catalog/scenes.toml` lists the scenes, their year windows, MusicBrainz terms and budget shares, plus the *paths* between scenes. One streaming pass over the release-group dump writes a compact **pool file** of every eligible album and a profile report. A pure selector reads the pool and the current catalog, then picks a batch scene by scene. It uses a greedy rule with diminishing returns per artist and for broad-tag-only albums, and it reserves slices for connectors, live albums and well-described deep cuts. The existing ingest code upserts the batch. A coverage report and a path-reach report measure what changed, alongside the existing graded answer key and a new scene key.
 
@@ -45,6 +45,20 @@
   - (c) An ungraded path-reach report on frozen seeds.
   - (d) The coverage report.
   - Path reach is defined by tags, so it partly flatters tag-based recommenders. It is a coverage check, not a quality score. Quality comes from the graded keys.
+
+## Checkpoint decisions (owner, 2026-10-21, after the first dump profile)
+
+The first profile (`catalog/reports/profile-2026-10-21.md`) showed that broad tags were filling the scenes. "Electronic" put Merzbow and Prince in the motorik center, and "jazz" put Anthony Braxton in lounge. The owner decided the following, and these override the Design section above where they differ:
+
+- **Stay faithful to the scenes.** A catalog of about 60–75k, or smaller, is fine. Count is not the goal.
+- **Broad tags never place an album on their own**, in any scene, with no exceptions. They only add evidence to an album that already has a scene term. The broad-only reward decay and `broad_only_halfway` are gone.
+- **Dark, depressive and atonal albums are cut** through a global `cut_terms` list in `scenes.toml`: metal, noise, industrial, drone and dark ambient, dark genres, experimental sound work, free jazz and free improvisation, avant-garde, no wave, noise rock, musique concrète, and meditation. New age is kept. Goth and gothic rock are kept as part of post-punk.
+- **Main-tag rule:** a cut term, a scene's `exclude_terms` or a deprioritized term only applies when it is one of the album's main tags. The main tags are those with the top vote count, and ties count. This keeps albums like *Loveless* (noise rock 3, shoegaze 19) and *A Love Supreme* (free jazz 5).
+- **Ambient-only albums are dropped:** an album whose only scene term is "ambient" also needs another scene's term (`needs_company = ["ambient"]`).
+- **The Japanese scene's gate no longer includes "j pop"**, which was pulling in idol pop.
+- **The center stays thin.** There is no hand-picked artist list and no rule that brings in an artist's other albums. MusicBrainz barely tags this music.
+- **Connectors through a shared term stay**, for example soul ↔ funk via "soul" and the krautrock era bridges.
+- **Batches:** batch 1 is +15,000, and batch 2 is everything left (`--target 100000`; the selector stops when the pools run out). This replaces +25k then +50k.
 
 ## Global Constraints
 
@@ -820,10 +834,10 @@ No new code. Each step is a command with a result to check. **Two owner checkpoi
 
 ---
 
-### Task 11: Batch 1 (+25,000), rebuild and compare (operational)
+### Task 11: Batch 1 (+15,000), rebuild and compare (operational)
 
 - [ ] **Step 1: Back up the database.** Run `mkdir -p ../backups && docker compose exec -T db pg_dump -U crate -Fc crate > ../backups/pre-batch-1.dump`. Check that the file is over 10 MB.
-- [ ] **Step 2: Select.** Run `uv run python -m crate_backend.scripts.select_catalog_batch --name batch-1 --target 25000`. Read the summary, and spot-check 20 random lines from three scenes (one center, one roots, one wider) for obvious misfits. Commit `catalog/batches/batch-1.*`.
+- [ ] **Step 2: Select.** Run `uv run python -m crate_backend.scripts.select_catalog_batch --name batch-1 --target 15000` (checkpoint decision; originally 25000). Read the summary, and spot-check 20 random lines from three scenes (one center, one roots, one wider) for obvious misfits. Commit `catalog/batches/batch-1.*`.
 - [ ] **Step 3: Ingest.** Run `uv run python -m crate_backend.scripts.ingest_musicbrainz --batch ../catalog/batches/batch-1.jsonl --skip-cover-art`. Expected: "already in catalog: 0" and an ingested count equal to the batch size minus "missing from pool".
 - [ ] **Step 4: Links and text.** Run `uv run python -m crate_backend.scripts.link_wikidata`, then `uv run python -m crate_backend.scripts.backfill_wikipedia_text`. The link pass re-reads links for the existing 25k from the newer dump, which is expected. Articles whose links changed are fetched again.
 - [ ] **Step 5: Slow backfills.** These take about 7 hours each at 1 request a second. They can run in background terminals at the same time as each other and as Step 6:
@@ -849,10 +863,10 @@ No new code. Each step is a command with a result to check. **Two owner checkpoi
 
 ---
 
-### Task 12: Batch 2 (+50,000), rebuild and compare (operational)
+### Task 12: Batch 2 (everything left), rebuild and compare (operational)
 
 - [ ] **Step 1:** Proceed only after the Task 11 ⏸ decision, and with any `scenes.toml` changes committed. Archive the batch-1 models: `mkdir -p ../models/archive/batch-1 && cp ../models/*.joblib ../models/archive/batch-1/`.
-- [ ] **Step 2:** Repeat Task 11 Steps 1–9 with `pre-batch-2.dump`, `--name batch-2 --target 50000` and labels `after-batch-2`. Expect about 14 hours for each slow backfill. Add the after-batch-2 columns to the method report.
+- [ ] **Step 2:** Repeat Task 11 Steps 1–9 with `pre-batch-2.dump`, `--name batch-2 --target 100000` (takes every remaining in-scene album) and labels `after-batch-2`. Expect about 14 hours for each slow backfill. Add the after-batch-2 columns to the method report.
 - [ ] **Step 3: ⏸** Present the results. A third batch, tag normalization along the paths, or stopping are the owner's call. None of these is part of this plan.
 
 ---
