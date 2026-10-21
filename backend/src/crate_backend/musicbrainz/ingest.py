@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from crate_backend.models.artist_relationship import ArtistRelationship
 from crate_backend.models.catalog import Album, AlbumGenre, AlbumTag, Artist, Genre, Tag
-from crate_backend.musicbrainz.extract import CandidateAlbum, ResolvedArtist
+from crate_backend.musicbrainz.extract import CandidateAlbum, ResolvedArtist, release_year
 
 _TITLE_MAX = 500
 _NAME_MAX = 255
@@ -16,12 +16,6 @@ _NAME_MAX = 255
 # the whole single-transaction ingest.
 def _clip(value: str, max_length: int) -> str:
     return value[:max_length]
-
-
-def _release_year(first_release_date: str | None) -> int | None:
-    year = (first_release_date or "")[:4]
-    # isascii() too: str.isdigit() accepts characters like "¹" that int() rejects.
-    return int(year) if len(year) == 4 and year.isascii() and year.isdigit() else None
 
 
 async def _get_or_create_artist(session: AsyncSession, musicbrainz_id: str, name: str) -> Artist:
@@ -78,7 +72,7 @@ async def upsert_album(session: AsyncSession, candidate: CandidateAlbum) -> Albu
     album.title = _clip(candidate.title, _TITLE_MAX)
     album.artist_name = _clip(credit_name, _NAME_MAX) if credit_name else None
     album.primary_artist = primary_artist
-    album.release_year = _release_year(candidate.first_release_date)
+    album.release_year = release_year(candidate.first_release_date)
     await session.flush()
 
     kept_genre_ids = []

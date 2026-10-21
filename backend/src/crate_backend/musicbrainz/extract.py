@@ -39,7 +39,13 @@ class ResolvedArtist:
     relationships: list[ResolvedArtistRelationship] = field(default_factory=list)
 
 
-def _is_catalog_eligible(record: dict[str, Any]) -> bool:
+def release_year(first_release_date: str | None) -> int | None:
+    year = (first_release_date or "")[:4]
+    # isascii() too: str.isdigit() accepts characters like "¹" that int() rejects.
+    return int(year) if len(year) == 4 and year.isascii() and year.isdigit() else None
+
+
+def is_catalog_eligible(record: dict[str, Any]) -> bool:
     if record.get("primary-type") != "Album":
         return False
     if not all(t in ALLOWED_SECONDARY_TYPES for t in record.get("secondary-types") or []):
@@ -49,7 +55,7 @@ def _is_catalog_eligible(record: dict[str, Any]) -> bool:
     return bool(record.get("genres")) or bool(record.get("tags"))
 
 
-def _to_candidate(record: dict[str, Any]) -> CandidateAlbum:
+def to_candidate(record: dict[str, Any]) -> CandidateAlbum:
     return CandidateAlbum(
         musicbrainz_id=record["id"],
         title=record["title"],
@@ -66,7 +72,7 @@ def filter_and_rank_release_groups(
     """The `target_size` eligible release groups with the most tag votes,
     highest first. Holds at most `target_size` candidates in memory, since
     `records` is a single pass over a multi-million-row dump."""
-    candidates = (_to_candidate(r) for r in records if _is_catalog_eligible(r))
+    candidates = (to_candidate(r) for r in records if is_catalog_eligible(r))
     return heapq.nlargest(target_size, candidates, key=lambda c: c.tag_vote_total)
 
 
