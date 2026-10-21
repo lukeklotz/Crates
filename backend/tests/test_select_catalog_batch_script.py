@@ -76,3 +76,10 @@ async def test_read_batch_ids_round_trip(script):
     ids = module.read_batch_ids(path)
     assert len(ids) == 3
     assert all(i.startswith("rg-") for i in ids)
+
+
+async def test_summary_names_exhausted_scenes(script):
+    module, pool, catalog_dir = script
+    await module.select("batch-1", 50, force=False, catalog_dir=catalog_dir, pool_path=pool)
+    summary = (catalog_dir / "batches" / "batch-1.md").read_text()
+    assert "Scenes with no studio candidates left: a, b, c, d." in summary

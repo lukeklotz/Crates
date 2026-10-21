@@ -46,6 +46,9 @@ class BatchResult:
     budgets: dict[str, int]
     # Budget a scene could not fill from its own candidates; it went to others.
     shortfalls: dict[str, int] = field(default_factory=dict)
+    # Scenes with no studio candidates left once the batch is picked,
+    # including any that ran dry after taking redistributed budget.
+    exhausted: list[str] = field(default_factory=list)
 
 
 def is_deep_cut(album: PoolAlbum | CatalogAlbum, settings: SelectionSettings) -> bool:
@@ -201,4 +204,7 @@ def select_batch(
             break
         open_capacity = scene_budgets(config, leftover, with_candidates)
 
-    return BatchResult(picks=selection.picks, budgets=budgets, shortfalls=shortfalls)
+    exhausted = [s.id for s in config.scenes if not studio_left(s.id)]
+    return BatchResult(
+        picks=selection.picks, budgets=budgets, shortfalls=shortfalls, exhausted=exhausted
+    )

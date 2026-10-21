@@ -60,3 +60,14 @@ async def test_profile_pool_does_not_read_the_dump(script, tmp_path, monkeypatch
     report = await script.profile_pool(pool, tmp_path / "again")
     assert report.name == "profile-2026-10-18.md"
     assert "| In a scene | 1 |" in report.read_text()
+
+
+async def test_profile_pool_keeps_the_dump_funnel(script, tmp_path):
+    pool = tmp_path / "pool.jsonl.gz"
+    await script.profile_dump(Path("/unused"), pool, tmp_path / "reports")
+    report = await script.profile_pool(pool, tmp_path / "again")
+    text = report.read_text()
+    # 3 release groups in the dump, but only 1 in the pool.
+    assert "| All release groups | 3 |" in text
+    assert "| Primary type Album | 2 |" in text
+    assert "| With any genre or tag | 1 |" in text

@@ -114,3 +114,11 @@ async def test_write_coverage_script(monkeypatch, tmp_path, db_session):
     assert path.name.endswith("-after-batch-1.md")
     assert "| d | 1 | 0 | 0 | 1 |" in text  # albums, live, original, batch-1
     assert "| 50% |" in text  # d0 of {d0, d-live}
+
+
+def test_entry_point_coverage_counts_catalog_albums_whatever_their_home():
+    # The catalog copy's tags (from an older dump) place it in no scene, but
+    # it is still one of the pool's top albums in d.
+    drifted = catalog_album("d0", {"polka": 3}, 1991)
+    rows = scene_coverage([drifted], {"d": {"d0", "d1"}}, set(), {}, config)
+    assert _by_scene(rows)["d"].entry_point_coverage == 0.5

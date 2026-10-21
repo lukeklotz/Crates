@@ -58,6 +58,10 @@ def scene_coverage(
     batches: dict[str, set[str]],
     config: SceneConfig,
 ) -> list[SceneCoverage]:
+    catalog = list(catalog)
+    # By MBID, not home scene: a catalog copy whose older tags place it
+    # elsewhere still covers that entry point.
+    catalog_ids = {a.musicbrainz_id for a in catalog if a.musicbrainz_id}
     members: dict[str, list[CatalogAlbum]] = {s.id: [] for s in config.scenes}
     for album in catalog:
         if album.match is not None:
@@ -65,7 +69,6 @@ def scene_coverage(
     rows = []
     for scene in config.scenes:
         albums = members[scene.id]
-        in_catalog = {a.musicbrainz_id for a in albums}
         top = pool_top.get(scene.id, set())
         artists = Counter(a.primary_artist_id or a.artist_name or str(a.album_id) for a in albums)
         rows.append(
@@ -76,7 +79,7 @@ def scene_coverage(
                 by_batch=dict(Counter(_batch_of(a.musicbrainz_id, batches) for a in albums)),
                 artists=len(artists),
                 max_per_artist=max(artists.values(), default=0),
-                entry_point_coverage=len(top & in_catalog) / len(top) if top else 0.0,
+                entry_point_coverage=len(top & catalog_ids) / len(top) if top else 0.0,
                 deep_cuts=sum(is_deep_cut(a, config.settings) for a in albums),
                 with_text=sum(a.has_text for a in albums) / len(albums) if albums else 0.0,
                 quartiles=dict(

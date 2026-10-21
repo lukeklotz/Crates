@@ -75,6 +75,10 @@ def render_summary(
         "",
         f"Target: {target:,}. Picked: {len(result.picks):,}. scenes.toml: {scenes_version}.",
         "",
+        "Scenes with no studio candidates left: "
+        + (", ".join(result.exhausted) if result.exhausted else "none")
+        + ".",
+        "",
         "## Scenes",
         "",
         "| Scene | Budget | Picked | "

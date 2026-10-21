@@ -64,3 +64,18 @@ def test_repository_scenes_file_loads():
     assert len(config.scenes) == 21
     assert sum(s.share for s in config.scenes) == 100
     assert {s.tier for s in config.scenes} == set(TIERS)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("deep_cut_share = 0.15", "deep_cut_share = 0.9", "add up"),
+        ("live_share = 0.05", "live_share = -0.1", "live_share"),
+        ("broad_only_halfway = 200", "broad_only_halfway = 0", "broad_only_halfway"),
+        ("artist_decay = 0.75", "artist_decay = 0", "artist_decay"),
+        ("artist_decay = 0.75", "artist_decay = 1.5", "artist_decay"),
+    ],
+)
+def test_settings_are_validated(old, new, message):
+    with pytest.raises(SceneConfigError, match=message):
+        parse_scene_config(MINIMAL.replace(old, new))

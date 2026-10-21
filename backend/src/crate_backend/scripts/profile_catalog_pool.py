@@ -13,6 +13,7 @@ from the pool file in a minute or two without reading the dump.
 
 import argparse
 import asyncio
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -45,8 +46,13 @@ async def _catalog_size() -> int:
         return await session.scalar(select(func.count()).select_from(Album)) or 0
 
 
-def _snapshot_file(pool_path: Path) -> Path:
-    return pool_path.with_name(pool_path.name + ".timestamp")
+# Funnel steps before the pool filter: only the dump pass sees them, so
+# --from-pool reuses the numbers it saved.
+DUMP_FUNNEL = ("release_groups", "album_primary", "allowed_types", "with_any_term")
+
+
+def _meta_file(pool_path: Path) -> Path:
+    return pool_path.with_name(pool_path.name + ".meta.json")
 
 
 def _snapshot_date(timestamp: str) -> str:
@@ -89,7 +95,8 @@ async def profile_dump(dump_dir: Path, pool_path: Path, report_dir: Path) -> Pat
     records = stream_jsonl_from_tar(archive, "mbdump/release-group")
     written = write_pool(_counted(records, counts, config, catalog_ids), pool_path)
     timestamp = metadata.get("TIMESTAMP", "")
-    _snapshot_file(pool_path).write_text(timestamp)
+    meta = {"timestamp": timestamp, **{name: getattr(counts, name) for name in DUMP_FUNNEL}}
+    _meta_file(pool_path).write_text(json.dumps(meta, indent=2) + "\n")
     print(f"Wrote {written:,} pool records to {pool_path}")
     path = _write_report(
         counts, config, _snapshot_date(timestamp), await _catalog_size(), report_dir
@@ -104,8 +111,13 @@ async def profile_pool(pool_path: Path, report_dir: Path) -> Path:
     counts = ProfileCounts(config.settings)
     for _ in _counted(read_raw_pool(pool_path), counts, config, catalog_ids):
         pass
-    snapshot_file = _snapshot_file(pool_path)
-    timestamp = snapshot_file.read_text() if snapshot_file.exists() else ""
+    meta_file = _meta_file(pool_path)
+    meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+    for name in DUMP_FUNNEL:
+        # Without the dump pass's numbers, show 0 rather than pool counts
+        # that would pass for the whole dump.
+        setattr(counts, name, meta.get(name, 0))
+    timestamp = meta.get("timestamp", "")
     path = _write_report(
         counts, config, _snapshot_date(timestamp), await _catalog_size(), report_dir
     )

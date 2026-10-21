@@ -126,6 +126,21 @@ def _scene(raw: dict[str, Any]) -> Scene:
     )
 
 
+def _check_settings(settings: SelectionSettings) -> None:
+    """Reject values that would break the selector's guarantees, such as
+    reserved slices that together claim more than a scene's whole budget."""
+    shares = ("live_share", "connector_share", "deep_cut_share")
+    for name in shares:
+        if getattr(settings, name) < 0:
+            raise SceneConfigError(f"[settings]: {name} must not be negative")
+    if sum(getattr(settings, name) for name in shares) > 1:
+        raise SceneConfigError(f"[settings]: {', '.join(shares)} must add up to at most 1")
+    if settings.broad_only_halfway <= 0:
+        raise SceneConfigError("[settings]: broad_only_halfway must be above 0")
+    if not 0 < settings.artist_decay <= 1:
+        raise SceneConfigError("[settings]: artist_decay must be above 0 and at most 1")
+
+
 def parse_scene_config(text: str) -> SceneConfig:
     data = tomllib.loads(text)
     raw_settings = dict(data.get("settings") or {})
@@ -135,6 +150,7 @@ def parse_scene_config(text: str) -> SceneConfig:
         settings = SelectionSettings(**raw_settings)
     except TypeError as error:
         raise SceneConfigError(f"[settings]: {error}") from error
+    _check_settings(settings)
 
     scenes = tuple(_scene(raw) for raw in data.get("scene") or [])
     seen: set[str] = set()

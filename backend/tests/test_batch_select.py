@@ -222,3 +222,19 @@ def test_picks_record_gain_and_evidence():
     result = select_batch([album("one", {"alpha": 3}, config=config)], [], config, 1)
     pick = result.picks[0]
     assert (pick.scene, pick.slice, pick.evidence, pick.gain) == ("a", "open", 2.0, 2.0)
+
+
+def test_exhausted_names_scenes_that_ran_dry_after_redistribution():
+    config = make_config(two_scenes=True)
+    pool = [album(f"a{i}", {"alpha": 3}, artist=f"aa{i}", config=config) for i in range(2)]
+    pool += [album(f"b{i}", {"beta": 3}, artist=f"bb{i}", config=config) for i in range(4)]
+    result = select_batch(pool, [], config, 10)
+    assert len(result.picks) == 6
+    assert result.shortfalls == {"a": 5}
+    assert result.exhausted == ["a", "b"]
+
+
+def test_exhausted_is_empty_when_candidates_remain():
+    config = make_config()
+    pool = [album(f"e{i}", {"alpha": 3}, artist=f"a{i}", config=config) for i in range(3)]
+    assert select_batch(pool, [], config, 2).exhausted == []
