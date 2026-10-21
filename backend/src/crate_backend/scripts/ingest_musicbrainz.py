@@ -3,6 +3,12 @@
 Design: docs/superpowers/specs/2026-09-20-musicbrainz-ingestion-design.md
 
 Run with: uv run python -m crate_backend.scripts.ingest_musicbrainz [--skip-cover-art | --cover-art-only]
+      or: uv run python -m crate_backend.scripts.ingest_musicbrainz --batch ../catalog/batches/batch-1.jsonl [--skip-cover-art]
+
+--batch adds the albums listed in a catalog batch file (written by
+select_catalog_batch) from the scene pool, instead of ranking the whole dump.
+Albums already in the catalog are skipped, never updated. Plan:
+docs/superpowers/plans/2026-10-21-scene-catalog-expansion.md
 """
 
 import argparse
@@ -21,8 +27,11 @@ from crate_backend.musicbrainz.extract import (
     artist_ids_in_credits,
     filter_and_rank_release_groups,
     resolve_artists,
+    to_candidate,
 )
 from crate_backend.musicbrainz.ingest import upsert_album, upsert_artist_relationships
+from crate_backend.scenes.batches import read_batch_ids
+from crate_backend.scenes.pool import read_raw_pool
 
 _PROGRESS_EVERY = 1000
 _COVER_ART_COMMIT_EVERY = 100
@@ -65,6 +74,51 @@ async def ingest_dumps(dump_dir: Path, target_size: int) -> None:
         f"tag {_percent(sum(1 for c in candidates if c.tags), total)}, "
         f"resolved artists with a relationship "
         f"{_percent(sum(1 for a in artists.values() if a.relationships), len(artists))}."
+    )
+
+
+async def ingest_batch(batch_path: Path, pool_path: Path, artist_archive: Path) -> None:
+    """Add a batch's albums from the scene pool in one transaction. Albums
+    already in the catalog are left exactly as they are, so a re-run after a
+    partial or finished ingest adds nothing twice."""
+    batch_ids = read_batch_ids(batch_path)
+    async with async_session_factory() as session:
+        # The whole catalog's IDs, not an IN list: a 50,000-album batch would
+        # pass asyncpg's 32,767-parameter limit.
+        catalog_ids = set(
+            (
+                await session.scalars(
+                    select(Album.musicbrainz_release_group_id).where(
+                        Album.musicbrainz_release_group_id.is_not(None)
+                    )
+                )
+            ).all()
+        )
+        existing = set(batch_ids) & catalog_ids
+        wanted = set(batch_ids) - existing
+        print(f"Reading {len(wanted):,} batch albums from {pool_path.name}...")
+        candidates = [
+            to_candidate(record) for record in read_raw_pool(pool_path) if record["id"] in wanted
+        ]
+        missing = len(wanted) - len(candidates)
+
+        artists = {}
+        if candidates:
+            wanted_artists = artist_ids_in_credits(candidates)
+            print(f"Resolving {len(wanted_artists):,} credited artists...")
+            artists = resolve_artists(
+                stream_jsonl_from_tar(artist_archive, "mbdump/artist"), wanted_artists
+            )
+        for index, candidate in enumerate(candidates, start=1):
+            await upsert_album(session, candidate)
+            if index % _PROGRESS_EVERY == 0:
+                print(f"  upserted {index}/{len(candidates)} albums")
+        for artist in artists.values():
+            await upsert_artist_relationships(session, artist)
+        await session.commit()
+    print(
+        f"{batch_path.name}: in batch: {len(batch_ids):,}, already in catalog: {len(existing):,}, "
+        f"missing from pool: {missing:,}, ingested: {len(candidates):,}."
     )
 
 
@@ -115,11 +169,25 @@ def main() -> None:
         action="store_true",
         help="Skip the dumps; only fetch cover art for albums that don't have it yet.",
     )
+    parser.add_argument(
+        "--batch",
+        type=Path,
+        default=None,
+        help="ingest a catalog batch file from the scene pool instead of ranking the dump",
+    )
     args = parser.parse_args()
+    if args.batch and args.cover_art_only:
+        parser.error("--batch and --cover-art-only don't go together")
     settings = get_settings()
 
     async def _run() -> None:
-        if not args.cover_art_only:
+        if args.batch:
+            await ingest_batch(
+                args.batch,
+                Path(settings.scene_pool_path),
+                Path(settings.musicbrainz_dump_dir) / "artist.tar.xz",
+            )
+        elif not args.cover_art_only:
             await ingest_dumps(
                 Path(settings.musicbrainz_dump_dir), settings.musicbrainz_target_catalog_size
             )

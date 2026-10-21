@@ -111,3 +111,62 @@ async def test_fetch_missing_cover_art_saves_found_urls(script, db_session, monk
 
     await db_session.refresh(album)
     assert album.cover_art_url == "https://example.test/test-rg-art"
+
+
+def _write_batch_and_pool(tmp_path, batch_ids, pool_records):
+    from crate_backend.scenes.batches import write_batch
+    from crate_backend.scenes.pool import write_pool
+
+    pool = tmp_path / "pool.jsonl.gz"
+    write_pool(pool_records, pool)
+    batch = tmp_path / "batch-1.jsonl"
+    write_batch(({"musicbrainz_id": mbid} for mbid in batch_ids), batch)
+    return batch, pool
+
+
+async def test_ingest_batch_skips_existing_and_is_rerunnable(script, db_session, tmp_path):
+    second = {**_RELEASE_GROUPS[0], "id": "test-rg-2", "title": "Second Album"}
+    batch, pool = _write_batch_and_pool(
+        tmp_path, ["test-rg-1", "test-rg-2"], [_RELEASE_GROUPS[0], second]
+    )
+    db_session.add(Album(title="Kept Title", musicbrainz_release_group_id="test-rg-1"))
+    await db_session.flush()
+
+    await script.ingest_batch(batch, pool, Path("/unused/artist.tar.xz"))
+    await script.ingest_batch(batch, pool, Path("/unused/artist.tar.xz"))
+
+    albums = (
+        await db_session.scalars(
+            select(Album).where(Album.musicbrainz_release_group_id.in_(["test-rg-1", "test-rg-2"]))
+        )
+    ).all()
+    titles = sorted(a.title for a in albums)
+    assert titles == ["Kept Title", "Second Album"]
+    added = next(a for a in albums if a.musicbrainz_release_group_id == "test-rg-2")
+    await db_session.refresh(added, ["tags", "primary_artist"])
+    assert len(added.tags) == 1
+    assert added.primary_artist.musicbrainz_id == "test-artist-1"
+    edges = (
+        await db_session.scalars(
+            select(ArtistRelationship).where(ArtistRelationship.artist_id == added.primary_artist_id)
+        )
+    ).all()
+    assert [e.relationship_type for e in edges] == ["collaboration"]
+
+
+async def test_ingest_batch_reports_ids_missing_from_pool(script, tmp_path, capsys):
+    batch, pool = _write_batch_and_pool(
+        tmp_path, ["test-rg-1", "not-in-pool"], [_RELEASE_GROUPS[0]]
+    )
+    await script.ingest_batch(batch, pool, Path("/unused/artist.tar.xz"))
+    out = capsys.readouterr().out
+    assert "missing from pool: 1" in out
+    assert "ingested: 1" in out
+
+
+async def test_ingest_batch_handles_batches_over_the_parameter_limit(script, tmp_path, capsys):
+    # asyncpg allows 32,767 query parameters; batch 2 is 50,000 albums.
+    ids = ["test-rg-1", *(f"absent-{i}" for i in range(33_000))]
+    batch, pool = _write_batch_and_pool(tmp_path, ids, [_RELEASE_GROUPS[0]])
+    await script.ingest_batch(batch, pool, Path("/unused/artist.tar.xz"))
+    assert "ingested: 1" in capsys.readouterr().out
