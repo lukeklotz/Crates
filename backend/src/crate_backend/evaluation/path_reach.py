@@ -134,12 +134,16 @@ def render_reach(rows: list[ReachRow], *, label: str) -> str:
     lines = [
         f"# Path reach: {label}",
         "",
-        "Scene membership comes from tags, so tag-based variants are favoured; read this as "
-        "coverage, not quality.",
+        (
+            "Scene membership comes from tags, so tag-based variants are favoured; read this as "
+            "coverage, not quality."
+        ),
         "",
-        f"Shares of each seed's top {REACH_K}: in the seed's own scene, in a scene next to it "
-        "on a path, or in no scene. The rest are in other scenes. Artists = mean distinct "
-        f"artists in the top {REACH_K}.",
+        (
+            f"Shares of each seed's top {REACH_K}: in the seed's own scene, in a scene next to it "
+            "on a path, or in no scene. The rest are in other scenes. Artists = mean distinct "
+            f"artists in the top {REACH_K}."
+        ),
         "",
         "| Variant | Scene | Seeds | Same scene | Neighbor scene | No scene | Artists |",
         "|---|---|---|---|---|---|---|",
@@ -180,7 +184,10 @@ async def write_path_reach(
                 json.dumps({s: [str(i) for i in ids] for s, ids in frozen.items()}, indent=2) + "\n"
             )
         seed_scenes = {
-            album_id: scene for scene, ids in frozen.items() for album_id in ids if album_id in index
+            album_id: scene
+            for scene, ids in frozen.items()
+            for album_id in ids
+            if album_id in index
         }
         seeds = [
             Seed(

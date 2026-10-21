@@ -120,9 +120,11 @@ def render_coverage(
         "",
         f"Catalog albums: {total:,}. In no scene: {in_no_scene:,}.",
         "",
-        f"Entry points = share of the scene's top {ENTRY_POINT_DEPTH} pool albums by tag "
-        "evidence that are in the catalog. Text = share with a Wikipedia article. "
-        "Quartiles are Last.fm popularity (top, upper-mid, lower-mid, bottom, unknown).",
+        (
+            f"Entry points = share of the scene's top {ENTRY_POINT_DEPTH} pool albums by tag "
+            "evidence that are in the catalog. Text = share with a Wikipedia article. "
+            "Quartiles are Last.fm popularity (top, upper-mid, lower-mid, bottom, unknown)."
+        ),
         "",
         "## Scenes",
         "",

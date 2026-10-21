@@ -86,13 +86,17 @@ def test_matching_a_non_neighbor_is_not_a_connector():
 
 
 def test_min_matched_terms():
-    strict = minimal_config(MINIMAL.replace('years = [2005]', 'years = [2005]\nmin_matched_terms = 2'))
+    strict = minimal_config(
+        MINIMAL.replace("years = [2005]", "years = [2005]\nmin_matched_terms = 2")
+    )
     assert classify({"hauntology": 2}, 2010, strict) is None
 
 
 def test_requires_any():
     gated = minimal_config(
-        MINIMAL.replace('terms = ["Shibuya-kei"]', 'terms = ["Shibuya-kei"]\nrequires_any = ["japanese"]')
+        MINIMAL.replace(
+            'terms = ["Shibuya-kei"]', 'terms = ["Shibuya-kei"]\nrequires_any = ["japanese"]'
+        )
     )
     assert classify({"shibuya kei": 2}, 1996, gated) is None
     assert classify({"shibuya kei": 2, "japanese": 1}, 1996, gated).home == "a"

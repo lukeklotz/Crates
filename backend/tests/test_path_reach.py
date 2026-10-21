@@ -49,7 +49,11 @@ def test_reach_rows_shares():
     neighbor = catalog_album("neighbor", {"shibuya kei": 3}, 1996, "n")
     nowhere = catalog_album("nowhere", {"polka": 3}, 1991, "a0")
     index = {a.album_id: a for a in [seed, *same, neighbor, nowhere]}
-    runs = {"tfidf-tags": {seed.album_id: [same[0].album_id, same[1].album_id, neighbor.album_id, nowhere.album_id]}}
+    runs = {
+        "tfidf-tags": {
+            seed.album_id: [same[0].album_id, same[1].album_id, neighbor.album_id, nowhere.album_id]
+        }
+    }
 
     [row] = reach_rows(runs, {seed.album_id: "d"}, index, config)
 
@@ -62,7 +66,9 @@ def test_reach_rows_shares():
 
 def test_render_reach_says_it_is_coverage_not_quality():
     seed = catalog_album("seed", {"shoegaze": 3}, 1991, "s")
-    rows = reach_rows({"overlap": {seed.album_id: []}}, {seed.album_id: "d"}, {seed.album_id: seed}, config)
+    rows = reach_rows(
+        {"overlap": {seed.album_id: []}}, {seed.album_id: "d"}, {seed.album_id: seed}, config
+    )
     text = render_reach(rows, label="baseline-25k")
     assert "coverage, not quality" in text
     assert "baseline-25k" in text
@@ -83,7 +89,9 @@ async def test_frozen_seeds_are_reused(monkeypatch, tmp_path, db_session):
     monkeypatch.setattr(path_reach, "run_variants", fake_runs)
     monkeypatch.setattr(path_reach, "async_session_factory", _SessionFactory(db_session))
 
-    first = await path_reach.write_path_reach("baseline", variant_names="overlap", eval_folder=tmp_path)
+    first = await path_reach.write_path_reach(
+        "baseline", variant_names="overlap", eval_folder=tmp_path
+    )
     frozen = json.loads((tmp_path / "path-reach-seeds.json").read_text())
     assert frozen["d"] == [str(catalog[0].album_id)]
 
@@ -91,6 +99,8 @@ async def test_frozen_seeds_are_reused(monkeypatch, tmp_path, db_session):
         raise AssertionError("seeds were re-picked")
 
     monkeypatch.setattr(path_reach, "pick_path_seeds", must_not_run)
-    second = await path_reach.write_path_reach("after", variant_names="overlap", eval_folder=tmp_path)
+    second = await path_reach.write_path_reach(
+        "after", variant_names="overlap", eval_folder=tmp_path
+    )
     assert first.parent == second.parent == tmp_path / "results"
     assert "after" in second.name

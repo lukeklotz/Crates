@@ -26,7 +26,11 @@ def release_group(
         "genres": genres or [],
         "tags": [{"name": "shoegaze", "count": 3}] if tags is None else tags,
         "artist-credit": [
-            {"name": "Test Artist", "joinphrase": "", "artist": {"id": "test-artist-1", "name": "Test Artist"}}
+            {
+                "name": "Test Artist",
+                "joinphrase": "",
+                "artist": {"id": "test-artist-1", "name": "Test Artist"},
+            }
         ]
         if artist_credit is None
         else artist_credit,
@@ -78,7 +82,9 @@ def test_pool_round_trip_reclassifies_with_new_config(tmp_path):
     path = tmp_path / "pool.jsonl.gz"
     assert write_pool([release_group()], path) == 1
     assert [a.match.home for a in read_pool(path, config)] == ["d"]
-    without_shoegaze = minimal_config(MINIMAL.replace('terms = ["shoegaze", "dream pop"]', 'terms = ["dream pop"]'))
+    without_shoegaze = minimal_config(
+        MINIMAL.replace('terms = ["shoegaze", "dream pop"]', 'terms = ["dream pop"]')
+    )
     assert [a.match for a in read_pool(path, without_shoegaze)] == [None]
 
 
@@ -110,7 +116,10 @@ def test_is_deep_cut():
     famous[0]["count"] = 5
     assert is_deep_cut(_deep_cut_album(famous), settings) is False
     assert is_deep_cut(_deep_cut_album(well_described[:3]), settings) is False
-    one_scene_term = [well_described[0], *({"name": n, "count": 1} for n in ("noise", "lo fi", "loud"))]
+    one_scene_term = [
+        well_described[0],
+        *({"name": n, "count": 1} for n in ("noise", "lo fi", "loud")),
+    ]
     assert is_deep_cut(_deep_cut_album(one_scene_term), settings) is False
 
 

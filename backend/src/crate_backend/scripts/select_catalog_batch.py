@@ -36,16 +36,22 @@ def _scenes_version(catalog_dir: Path) -> str:
         root = Path(
             subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                cwd=catalog_dir, capture_output=True, text=True, check=True,
+                cwd=catalog_dir,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout.strip()
         )
         relative = (catalog_dir / "scenes.toml").resolve().relative_to(root)
         commit = subprocess.run(
             ["git", "log", "-1", "--format=%h", "--", str(relative)],
-            cwd=root, capture_output=True, text=True, check=True,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         changed = subprocess.run(
-            ["git", "diff", "--quiet", "HEAD", "--", str(relative)], cwd=root
+            ["git", "diff", "--quiet", "HEAD", "--", str(relative)], cwd=root, check=False
         ).returncode
     except (OSError, ValueError, subprocess.CalledProcessError):
         return "unknown"
@@ -71,7 +77,9 @@ def render_summary(
         "",
         "## Scenes",
         "",
-        "| Scene | Budget | Picked | " + " | ".join(s.capitalize() for s in SLICES) + " | Shortfall |",
+        "| Scene | Budget | Picked | "
+        + " | ".join(s.capitalize() for s in SLICES)
+        + " | Shortfall |",
         "|---" * (4 + len(SLICES)) + "|",
     ]
     for scene in config.scenes:
@@ -82,16 +90,17 @@ def render_summary(
             f"{result.shortfalls.get(sid, 0):,} |"
         )
     artists = Counter(albums[p.musicbrainz_id].artist_name for p in result.picks)
-    decades = Counter(
-        f"{albums[p.musicbrainz_id].year // 10 * 10}s" for p in result.picks
-    )
+    decades = Counter(f"{albums[p.musicbrainz_id].year // 10 * 10}s" for p in result.picks)
     lines += [
         "",
         "## Artists with the most picks",
         "",
         "| Artist | Albums |",
         "|---|---|",
-        *(f"| {a.replace('|', chr(92) + '|')} | {n} |" for a, n in artists.most_common(_TOP_ARTISTS)),
+        *(
+            f"| {a.replace('|', chr(92) + '|')} | {n} |"
+            for a, n in artists.most_common(_TOP_ARTISTS)
+        ),
         "",
         "## Picks per decade",
         "",

@@ -51,16 +51,27 @@ def test_profile_counts_live_and_artists_per_scene():
 
 def test_render_profile_marks_unassigned_terms():
     record = release_group(tags=[{"name": "shoegaze", "count": 3}, {"name": "polka", "count": 2}])
-    report = render_profile(_profile([(record, False)]), config, snapshot="2026-10-18", catalog_size=25000)
+    report = render_profile(
+        _profile([(record, False)]), config, snapshot="2026-10-18", catalog_size=25000
+    )
     assert "| polka | 1 | unassigned |" in report
     assert "| shoegaze | 1 | d |" in report
-    for heading in ("## Funnel", "## Scenes", "## Years", "## Terms", "## Artists", "## Existing catalog"):
+    for heading in (
+        "## Funnel",
+        "## Scenes",
+        "## Years",
+        "## Terms",
+        "## Artists",
+        "## Existing catalog",
+    ):
         assert heading in report
     for scene in config.scenes:
         assert scene.id in report
 
 
 def test_render_profile_marks_deprioritized_terms():
-    record = release_group(tags=[{"name": "shoegaze", "count": 3}, {"name": "indie rock", "count": 2}])
+    record = release_group(
+        tags=[{"name": "shoegaze", "count": 3}, {"name": "indie rock", "count": 2}]
+    )
     report = render_profile(_profile([(record, False)]), config, snapshot="x", catalog_size=0)
     assert "| indie rock | 1 | unassigned, deprioritized |" in report

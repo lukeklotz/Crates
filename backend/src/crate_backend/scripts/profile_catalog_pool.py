@@ -69,8 +69,9 @@ def _counted(
             print(f"  read {index:,} release groups")
 
 
-def _write_report(counts: ProfileCounts, config: SceneConfig, snapshot: str, size: int,
-                  report_dir: Path) -> Path:
+def _write_report(
+    counts: ProfileCounts, config: SceneConfig, snapshot: str, size: int, report_dir: Path
+) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"profile-{snapshot}.md"
     path.write_text(render_profile(counts, config, snapshot=snapshot, catalog_size=size))
@@ -90,7 +91,9 @@ async def profile_dump(dump_dir: Path, pool_path: Path, report_dir: Path) -> Pat
     timestamp = metadata.get("TIMESTAMP", "")
     _snapshot_file(pool_path).write_text(timestamp)
     print(f"Wrote {written:,} pool records to {pool_path}")
-    path = _write_report(counts, config, _snapshot_date(timestamp), await _catalog_size(), report_dir)
+    path = _write_report(
+        counts, config, _snapshot_date(timestamp), await _catalog_size(), report_dir
+    )
     print(f"Wrote {path}")
     return path
 
@@ -103,7 +106,9 @@ async def profile_pool(pool_path: Path, report_dir: Path) -> Path:
         pass
     snapshot_file = _snapshot_file(pool_path)
     timestamp = snapshot_file.read_text() if snapshot_file.exists() else ""
-    path = _write_report(counts, config, _snapshot_date(timestamp), await _catalog_size(), report_dir)
+    path = _write_report(
+        counts, config, _snapshot_date(timestamp), await _catalog_size(), report_dir
+    )
     print(f"Wrote {path}")
     return path
 

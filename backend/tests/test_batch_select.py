@@ -48,7 +48,7 @@ scenes = ["a", "b"]
 def make_config(*, two_scenes=False, share_a=7, share_b=3, **settings):
     values = {**_SETTINGS, **settings}
     lines = ["[settings]", *(f"{k} = {v}" for k, v in values.items())]
-    lines.append('nondescriptive_terms = []')
+    lines.append("nondescriptive_terms = []")
     lines.append('deprioritized_terms = ["indie rock"]')
     text = "\n".join(lines) + _SCENE_A.format(share_a=share_a)
     if two_scenes:
@@ -100,7 +100,10 @@ def test_scene_budgets_largest_remainder():
 
 def test_select_never_picks_catalog_albums():
     config = make_config()
-    pool = [album("in-cat", {"alpha": 15}, config=config), album("new", {"alpha": 1}, config=config)]
+    pool = [
+        album("in-cat", {"alpha": 15}, config=config),
+        album("new", {"alpha": 1}, config=config),
+    ]
     result = select_batch(pool, [catalog_album("in-cat", "someone")], config, 5)
     assert picked(result) == ["new"]
 
@@ -141,7 +144,10 @@ def test_deprioritized_top_term_is_penalized():
 
 def test_live_albums_only_fill_the_live_slice():
     config = make_config(live_share=0.2)
-    pool = [album(f"live{i:02}", {"alpha": 15}, artist=f"l{i}", live=True, config=config) for i in range(20)]
+    pool = [
+        album(f"live{i:02}", {"alpha": 15}, artist=f"l{i}", live=True, config=config)
+        for i in range(20)
+    ]
     pool += [album(f"studio{i:02}", {"alpha": 1}, artist=f"s{i}", config=config) for i in range(20)]
     result = select_batch(pool, [], config, 10)
     live = [p for p in result.picks if p.musicbrainz_id.startswith("live")]
@@ -152,8 +158,12 @@ def test_live_albums_only_fill_the_live_slice():
 
 def test_connector_slice_reserved():
     config = make_config(two_scenes=True, connector_share=0.5)
-    pool = [album(f"conn{i}", {"alpha": 1, "beta": 1}, artist=f"c{i}", config=config) for i in range(2)]
-    pool += [album(f"strong{i:02}", {"alpha": 15}, artist=f"s{i}", config=config) for i in range(10)]
+    pool = [
+        album(f"conn{i}", {"alpha": 1, "beta": 1}, artist=f"c{i}", config=config) for i in range(2)
+    ]
+    pool += [
+        album(f"strong{i:02}", {"alpha": 15}, artist=f"s{i}", config=config) for i in range(10)
+    ]
     result = select_batch(pool, [], config, 10)
     connectors = [p for p in result.picks if p.musicbrainz_id.startswith("conn")]
     assert len(connectors) == 2
@@ -174,7 +184,10 @@ def test_deep_cut_slice_reserved():
     pool = [album("deep", deep_terms, artist="d", config=config)]
     pool += [album(f"strong{i}", {"alpha": 15}, artist=f"s{i}", config=config) for i in range(4)]
     result = select_batch(pool, [], config, 2)
-    assert [(p.musicbrainz_id, p.slice) for p in result.picks] == [("deep", "deep"), ("strong0", "open")]
+    assert [(p.musicbrainz_id, p.slice) for p in result.picks] == [
+        ("deep", "deep"),
+        ("strong0", "open"),
+    ]
 
 
 def test_shortfall_moves_to_scenes_with_candidates():

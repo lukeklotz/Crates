@@ -19,9 +19,12 @@ def script(monkeypatch, db_session, tmp_path):
     pool = tmp_path / "pool.jsonl.gz"
     write_pool(
         [
-            release_group(rg_id=f"rg-{i}", artist_credit=[
-                {"name": f"Artist {i}", "artist": {"id": f"artist-{i}", "name": f"Artist {i}"}}
-            ])
+            release_group(
+                rg_id=f"rg-{i}",
+                artist_credit=[
+                    {"name": f"Artist {i}", "artist": {"id": f"artist-{i}", "name": f"Artist {i}"}}
+                ],
+            )
             for i in range(6)
         ],
         pool,
@@ -42,7 +45,14 @@ async def test_select_writes_batch_and_summary(script):
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     assert len(lines) == 4
     assert set(lines[0]) == {
-        "musicbrainz_id", "title", "artist_name", "year", "scene", "slice", "gain", "live",
+        "musicbrainz_id",
+        "title",
+        "artist_name",
+        "year",
+        "scene",
+        "slice",
+        "gain",
+        "live",
     }
     assert lines[0]["scene"] == "d"
     summary = (catalog_dir / "batches" / "batch-1.md").read_text()

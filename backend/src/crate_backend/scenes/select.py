@@ -110,7 +110,9 @@ class _Selection:
             gain *= self.settings.deprioritized_factor
         return gain
 
-    def fill(self, scene_id: str, slice_name: str, candidates: list[PoolAlbum], capacity: int) -> int:
+    def fill(
+        self, scene_id: str, slice_name: str, candidates: list[PoolAlbum], capacity: int
+    ) -> int:
         """Take up to `capacity` of `candidates` by lazy greedy; returns how many."""
         heap = [
             (-self.gain(album), album.musicbrainz_id, index)
@@ -175,7 +177,9 @@ def select_batch(
 
     def studio_left(scene_id: str) -> list[PoolAlbum]:
         return [
-            a for a in by_scene[scene_id] if not a.is_live and a.musicbrainz_id not in selection.taken
+            a
+            for a in by_scene[scene_id]
+            if not a.is_live and a.musicbrainz_id not in selection.taken
         ]
 
     shortfalls: dict[str, int] = {}

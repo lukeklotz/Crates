@@ -40,7 +40,9 @@ def test_scene_coverage_counts():
     catalog = [
         catalog_album("d0", {"shoegaze": 3}, 1991, artist="x", has_text=True, popularity=0.9),
         catalog_album("d1", {"shoegaze": 3}, 1992, artist="x", popularity=0.1),
-        catalog_album("d2", {"shoegaze": 1, "dream pop": 1, "noise": 1, "lo fi": 1}, 1993, artist="y"),
+        catalog_album(
+            "d2", {"shoegaze": 1, "dream pop": 1, "noise": 1, "lo fi": 1}, 1993, artist="y"
+        ),
         catalog_album("none", {"polka": 2}, 1991),
     ]
     rows = scene_coverage(catalog, {}, {"d1"}, {"batch-1": {"d2"}}, config)
@@ -91,7 +93,9 @@ async def test_write_coverage_script(monkeypatch, tmp_path, db_session):
     from tests.test_scene_pool import release_group
 
     pool = tmp_path / "pool.jsonl.gz"
-    write_pool([release_group(rg_id="d0"), release_group(rg_id="d-live", secondary_types=["Live"])], pool)
+    write_pool(
+        [release_group(rg_id="d0"), release_group(rg_id="d-live", secondary_types=["Live"])], pool
+    )
     catalog_dir = tmp_path / "catalog"
     write_batch([{"musicbrainz_id": "d0"}], catalog_dir / "batches" / "batch-1.jsonl")
     catalog = [catalog_album("d0", {"shoegaze": 3}, 1991)]
@@ -103,7 +107,9 @@ async def test_write_coverage_script(monkeypatch, tmp_path, db_session):
     monkeypatch.setattr(catalog_coverage, "load_catalog_albums", fake_catalog)
     monkeypatch.setattr(catalog_coverage, "async_session_factory", _SessionFactory(db_session))
 
-    path = await catalog_coverage.write_coverage("after-batch-1", catalog_dir=catalog_dir, pool_path=pool)
+    path = await catalog_coverage.write_coverage(
+        "after-batch-1", catalog_dir=catalog_dir, pool_path=pool
+    )
     text = path.read_text()
     assert path.name.endswith("-after-batch-1.md")
     assert "| d | 1 | 0 | 0 | 1 |" in text  # albums, live, original, batch-1
