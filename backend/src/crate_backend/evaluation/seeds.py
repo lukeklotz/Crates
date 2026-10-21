@@ -8,6 +8,11 @@ with the seed.
 Run with: uv run python -m crate_backend.evaluation.seeds propose [--force]
           uv run python -m crate_backend.evaluation.seeds list
           uv run python -m crate_backend.evaluation.seeds swap N "title words" [--artist NAME]
+          uv run python -m crate_backend.evaluation.seeds add "title words" [--artist NAME]
+
+`add` builds a hand-picked key one album at a time; with
+CRATE_EVAL_DIR=../eval/scenes it builds the scene key (plan:
+docs/superpowers/plans/2026-10-21-scene-catalog-expansion.md).
 
 Design: docs/superpowers/specs/2026-09-26-tfidf-text-recommender-design.md
 """
@@ -240,18 +245,15 @@ async def search_candidates(
     return [found[album_id] for album_id in ids]
 
 
-def choose_and_swap(
+def _choose(
     seeds: list[Seed],
-    position: int,
     matches: list[SeedCandidate],
+    prompt: str,
     *,
     read_line: Callable[[str], str],
     write: Callable[[str], None],
-) -> list[Seed] | None:
-    """Ask which match replaces seed `position` (1-based). Returns the new
-    seed list, or None if nothing changed."""
-    if not 1 <= position <= len(seeds):
-        raise ValueError(f"Seed position must be between 1 and {len(seeds)}")
+) -> SeedCandidate | None:
+    """List the eligible matches that aren't seeds yet and ask for one."""
     current = {seed.album_id for seed in seeds}
     choices = [m for m in matches if is_eligible(m) and m.album_id not in current]
     hidden = len(matches) - len(choices)
@@ -267,16 +269,51 @@ def choose_and_swap(
             f"{number:2}. {match.title} — {match.artist_name} ({match.release_year or '?'}) "
             f"[{popularity_quartile(match.popularity)}, {match.n_terms} terms]"
         )
-    old = seeds[position - 1]
-    answer = read_line(f"Replace #{position} '{old.title}' with (number, Enter to cancel): ")
+    answer = read_line(prompt)
     if not answer.strip():
         return None
     if not answer.strip().isdigit() or not 1 <= int(answer) <= len(choices):
         write("Not a choice; nothing changed.")
         return None
+    return choices[int(answer) - 1]
+
+
+def choose_and_swap(
+    seeds: list[Seed],
+    position: int,
+    matches: list[SeedCandidate],
+    *,
+    read_line: Callable[[str], str],
+    write: Callable[[str], None],
+) -> list[Seed] | None:
+    """Ask which match replaces seed `position` (1-based). Returns the new
+    seed list, or None if nothing changed."""
+    if not 1 <= position <= len(seeds):
+        raise ValueError(f"Seed position must be between 1 and {len(seeds)}")
+    old = seeds[position - 1]
+    prompt = f"Replace #{position} '{old.title}' with (number, Enter to cancel): "
+    chosen = _choose(seeds, matches, prompt, read_line=read_line, write=write)
+    if chosen is None:
+        return None
     updated = list(seeds)
-    updated[position - 1] = seed_from(choices[int(answer) - 1])
+    updated[position - 1] = seed_from(chosen)
     return updated
+
+
+def choose_and_add(
+    seeds: list[Seed],
+    matches: list[SeedCandidate],
+    *,
+    read_line: Callable[[str], str],
+    write: Callable[[str], None],
+) -> list[Seed] | None:
+    """Ask which match to add as a new seed. Returns the new seed list, or
+    None if nothing changed. Used to build a hand-picked key, such as the
+    scene key in eval/scenes/."""
+    chosen = _choose(
+        seeds, matches, "Add which (number, Enter to cancel): ", read_line=read_line, write=write
+    )
+    return None if chosen is None else [*seeds, seed_from(chosen)]
 
 
 def _print_seeds(seeds: list[Seed], write: Callable[[str], None] = print) -> None:
@@ -310,6 +347,20 @@ async def _swap(position: int, query: str, artist: str | None) -> None:
     print("Grades for the old seed stay in judgments.jsonl; the scorer ignores them.")
 
 
+async def _add(query: str, artist: str | None) -> None:
+    path = eval_dir() / "seeds.json"
+    seeds = load_seeds(path) if path.exists() else []
+    async with async_session_factory() as session:
+        matches = await search_candidates(session, query, artist=artist)
+    updated = choose_and_add(seeds, matches, read_line=input, write=print)
+    if updated is None:
+        print("Nothing changed.")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_seeds(updated, path)
+    print(f"Added #{len(updated)}: {updated[-1].title} ({path})")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Propose or swap evaluation seed albums.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -320,6 +371,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     swap.add_argument("position", type=int, help="seed number as listed by `list` (1-based)")
     swap.add_argument("query", help="words from the album title")
     swap.add_argument("--artist", default=None, help="words from the artist name")
+    add = commands.add_parser("add", help="add a searched album as a new seed")
+    add.add_argument("query", help="words from the album title")
+    add.add_argument("--artist", default=None, help="words from the artist name")
     return parser.parse_args(argv)
 
 
@@ -330,6 +384,8 @@ def main() -> None:
             asyncio.run(_propose(args.force))
         elif args.command == "list":
             _print_seeds(load_seeds(eval_dir() / "seeds.json"))
+        elif args.command == "add":
+            asyncio.run(_add(args.query, args.artist))
         else:
             asyncio.run(_swap(args.position, args.query, args.artist))
     except (FileExistsError, FileNotFoundError, ValueError) as error:

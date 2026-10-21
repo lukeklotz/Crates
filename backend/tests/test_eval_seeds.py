@@ -8,6 +8,7 @@ from crate_backend.evaluation.seeds import (
     GENRE_BUCKETS,
     SeedCandidate,
     broad_genre,
+    choose_and_add,
     choose_and_swap,
     load_seed_candidates,
     propose_seeds,
@@ -255,6 +256,31 @@ def test_swap_with_an_invalid_choice_changes_nothing(answer):
 def test_swap_position_out_of_range_is_an_error():
     with pytest.raises(ValueError, match="between 1 and 2"):
         swap([cand(0, 0.3, "Jazz")], "1", position=3)
+
+
+def test_choose_and_add_appends_choice():
+    first, second = cand(0, 0.3, "Jazz"), cand(1, 0.9, "Jazz")
+    out: list[str] = []
+
+    result = choose_and_add([KEEP], [first, second], read_line=lambda prompt: "2", write=out.append)
+
+    assert result == [KEEP, Seed(second.album_id, second.title, second.artist_name, "top")]
+
+
+def test_choose_and_add_to_an_empty_key():
+    only = cand(0, 0.1, "Jazz")
+    result = choose_and_add([], [only], read_line=lambda prompt: "1", write=lambda line: None)
+    assert result == [Seed(only.album_id, only.title, only.artist_name, "bottom")]
+
+
+def test_choose_and_add_hides_existing_seeds():
+    already_seed = replace(cand(1, 0.3, "Jazz"), album_id=KEEP.album_id)
+    out: list[str] = []
+
+    result = choose_and_add([KEEP], [already_seed], read_line=lambda prompt: "1", write=out.append)
+
+    assert result is None
+    assert "No eligible matches" in "\n".join(out)
 
 
 async def test_search_candidates_matches_title_words_and_artist(db_session):

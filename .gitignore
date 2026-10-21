@@ -11,6 +11,8 @@ venv/
 # Built recommender models (rebuild with scripts/build_tfidf_model.py)
 /models/*.joblib
 /models/*.tmp
+# Earlier catalogs' models, kept to compare against after a catalog batch
+/models/archive/
 
 # Terraform (infrastructure)
 .terraform/
@@ -26,6 +28,8 @@ venv/
 # judgments.jsonl holds the owner's hand grades and stays local
 /eval/pool.jsonl
 /eval/judgments.jsonl
+/eval/scenes/pool.jsonl
+/eval/scenes/judgments.jsonl
 
 # Personal notes (not for the repo)
 /docs/project-decisions.md
@@ -35,3 +39,6 @@ venv/
 
 # Run logs
 *.log
+
+# Database backups taken before each catalog batch ingest
+/backups/
