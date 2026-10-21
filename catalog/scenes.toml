@@ -1,0 +1,298 @@
+# Crate catalog scenes: what the batch selector pulls from the MusicBrainz
+# dump, and the paths between scenes that later tag normalization and
+# evaluation follow. Plan: docs/superpowers/plans/2026-10-21-scene-catalog-expansion.md
+#
+# Terms are MusicBrainz genre or tag names, normalized on load (lowercase,
+# hyphens to spaces), so "Shibuya-kei" and "shibuya kei" are the same term.
+# terms count fully; broad_terms count at broad_weight and an album matching
+# only broad terms is "broad-only" and gets diminishing returns.
+# years = [from, to] inclusive, or [from] for "to the present".
+# share = this scene's part of each batch's additions (shares sum to 100).
+
+[settings]
+live_share = 0.05
+connector_share = 0.15
+deep_cut_share = 0.15
+broad_weight = 0.3
+artist_free_albums = 3
+artist_decay = 0.75
+broad_only_halfway = 200
+deprioritized_factor = 0.4
+deep_cut_max_votes = 6
+deep_cut_min_terms = 4
+deep_cut_min_scene_terms = 2
+
+# Year and decade tags ("1995", "90s") are dropped in code.
+nondescriptive_terms = [
+  "seen live", "favorites", "favourite", "favorite", "favourites", "albums i own",
+  "owned", "vinyl", "cd", "check out", "to listen", "wishlist", "my collection",
+  "1001 albums you must hear before you die", "best of", "classic", "masterpiece",
+  "under 2000 listeners", "spotify", "amazing", "awesome", "beautiful",
+]
+
+# An album whose single highest-voted descriptive term is one of these has its
+# gain multiplied by deprioritized_factor.
+deprioritized_terms = [
+  "indie rock", "garage rock revival", "post punk revival", "alternative rock",
+  "rock", "pop rock",
+]
+
+# ---------------------------------------------------------------- center
+[[scene]]
+id = "motorik-indietronica"
+name = "Motorik pop, experimental indie pop, psychedelic electronic pop, indietronica, retrofuturist pop"
+tier = "center"
+years = [1994, 2006]
+share = 11
+terms = ["indietronica", "motorik", "krautrock", "experimental pop", "avant pop",
+         "psychedelic pop", "electronica", "retro futurism", "space rock revival"]
+broad_terms = ["indie pop", "electronic", "post rock", "pop", "experimental"]
+
+[[scene]]
+id = "japanese-indie-pop"
+name = "Japanese home-recorded indie pop, picopop, electronic twee, softer and experimental Shibuya-kei"
+tier = "center"
+years = [1994, 2004]
+share = 8
+terms = ["shibuya kei", "picopop", "twee pop", "japanese indie", "j indie", "bedroom pop",
+         "lo fi", "electropop"]
+broad_terms = ["indie pop", "j pop", "pop", "electronic", "japanese"]
+requires_any = ["shibuya kei", "picopop", "japanese", "japanese indie", "j indie", "j pop"]
+
+[[scene]]
+id = "space-age-lounge-chamber"
+name = "Space-age pop, lounge and bossa-influenced indie pop, sophisticated chamber pop"
+tier = "center"
+years = [1993, 2006]
+share = 11
+terms = ["space age pop", "lounge", "exotica", "bossa nova", "chamber pop", "baroque pop",
+         "easy listening", "sophisti pop", "orchestral pop"]
+broad_terms = ["indie pop", "pop", "jazz"]
+
+# ---------------------------------------------------------------- close neighbors
+[[scene]]
+id = "dream-noise-pop"
+name = "Dream pop, gentle noise pop, twee"
+tier = "neighbor"
+years = [1990, 2008]
+share = 6
+terms = ["dream pop", "noise pop", "ethereal wave", "twee pop", "jangle pop"]
+broad_terms = ["indie pop", "indie rock", "pop"]
+
+[[scene]]
+id = "art-pop-downtempo"
+name = "Art pop, electronic folk, downtempo pop"
+tier = "neighbor"
+years = [1990, 2008]
+share = 6
+terms = ["art pop", "folktronica", "downtempo", "ambient pop", "chamber folk"]
+broad_terms = ["electronic", "pop", "folk", "indie folk"]
+
+[[scene]]
+id = "sample-psych-pop"
+name = "Sample-based psychedelic pop"
+tier = "neighbor"
+years = [1990, 2008]
+share = 6
+terms = ["plunderphonics", "sound collage", "neo psychedelia", "sampledelia",
+         "psychedelic pop"]
+broad_terms = ["psychedelic", "electronic", "experimental"]
+
+# ---------------------------------------------------------------- roots
+[[scene]]
+id = "psych-sunshine-pop"
+name = "Psychedelic and sunshine pop"
+tier = "roots"
+years = [1965, 1982]
+share = 3
+terms = ["psychedelic pop", "sunshine pop", "baroque pop", "orchestral pop"]
+broad_terms = ["psychedelic rock", "pop", "psychedelic"]
+
+[[scene]]
+id = "french-pop-yeye"
+name = "French pop and yé-yé"
+tier = "roots"
+years = [1965, 1982]
+share = 3
+terms = ["yé yé", "ye ye", "french pop", "variété française", "nouvelle chanson"]
+broad_terms = ["chanson", "chanson française", "pop", "french"]
+
+[[scene]]
+id = "brazil-bossa-tropicalia"
+name = "Brazilian bossa nova and tropicália"
+tier = "roots"
+years = [1965, 1982]
+share = 3
+terms = ["bossa nova", "tropicália", "tropicalia", "mpb", "samba", "samba rock",
+         "brazilian"]
+broad_terms = ["latin", "jazz", "brazil"]
+
+[[scene]]
+id = "kosmische-motorik"
+name = "German kosmische and motorik music"
+tier = "roots"
+years = [1965, 1982]
+share = 3
+terms = ["krautrock", "kosmische musik", "kosmische", "berlin school", "motorik",
+         "progressive electronic"]
+broad_terms = ["electronic", "experimental", "progressive rock"]
+
+[[scene]]
+id = "early-electronic-library"
+name = "Early electronic pop and library music"
+tier = "roots"
+years = [1965, 1982]
+share = 3
+terms = ["library music", "space age pop", "musique concrète", "radiophonic", "moog",
+         "synthpop", "synth pop", "exotica"]
+broad_terms = ["electronic", "easy listening", "experimental"]
+
+# ---------------------------------------------------------------- later echoes
+[[scene]]
+id = "later-echoes"
+name = "Hauntology, analog-synth pop, experimental bedroom pop, neo-psychedelic pop (close sound only)"
+tier = "echoes"
+years = [2005]
+share = 4
+min_matched_terms = 2
+terms = ["hauntology", "hypnagogic pop", "bedroom pop", "neo psychedelia", "chillwave",
+         "psychedelic pop", "indietronica", "library music"]
+broad_terms = ["synthpop", "synth pop", "electronic", "indie pop"]
+
+# ---------------------------------------------------------------- wider scenes
+[[scene]]
+id = "soul"
+name = "Soul, deep soul, psychedelic soul, gospel-influenced soul"
+tier = "wider"
+years = [1960, 1982]
+share = 4
+terms = ["soul", "deep soul", "southern soul", "psychedelic soul", "philly soul",
+         "northern soul", "chicago soul", "smooth soul"]
+broad_terms = ["gospel", "rhythm and blues", "r and b"]
+
+[[scene]]
+id = "funk-early-disco"
+name = "Funk and early disco"
+tier = "wider"
+years = [1965, 1982]
+share = 3
+terms = ["funk", "p funk", "disco", "boogie", "funk soul"]
+broad_terms = ["soul", "dance"]
+
+[[scene]]
+id = "early-hip-hop"
+name = "Early hip hop"
+tier = "wider"
+years = [1979, 1991]
+share = 3
+terms = ["old school hip hop", "golden age hip hop", "electro"]
+broad_terms = ["hip hop", "rap"]
+
+[[scene]]
+id = "nineties-rap"
+name = "1990s East Coast, West Coast and Southern rap; boom bap, jazz rap, alternative and sample-heavy hip hop"
+tier = "wider"
+years = [1986, 2005]
+share = 6
+terms = ["east coast hip hop", "west coast hip hop", "southern hip hop", "boom bap",
+         "jazz rap", "alternative hip hop", "conscious hip hop", "abstract hip hop",
+         "g funk", "hardcore hip hop", "instrumental hip hop", "experimental hip hop",
+         "turntablism", "gangsta rap"]
+broad_terms = ["hip hop", "rap"]
+
+[[scene]]
+id = "hard-bop-modal-spiritual"
+name = "Hard bop, modal and spiritual jazz"
+tier = "wider"
+years = [1955, 1980]
+share = 4
+terms = ["hard bop", "modal jazz", "spiritual jazz", "post bop", "soul jazz"]
+broad_terms = ["jazz"]
+
+[[scene]]
+id = "fusion-brazilian-jazz"
+name = "Jazz fusion and Brazilian jazz"
+tier = "wider"
+years = [1955, 1980]
+share = 3
+terms = ["jazz fusion", "jazz funk", "brazilian jazz", "samba jazz", "jazz rock"]
+broad_terms = ["jazz"]
+
+[[scene]]
+id = "post-punk-shoegaze"
+name = "Post-punk and shoegaze"
+tier = "wider"
+years = [1978, 2010]
+share = 4
+terms = ["post punk", "shoegaze", "coldwave", "minimal wave", "no wave"]
+broad_terms = ["new wave", "indie rock"]
+exclude_terms = ["post punk revival"]
+
+[[scene]]
+id = "ambient-trip-hop-idm"
+name = "Ambient, trip hop and leftfield electronic"
+tier = "wider"
+years = [1978, 2010]
+share = 4
+terms = ["ambient", "trip hop", "idm", "leftfield", "glitch", "illbient", "ambient techno"]
+broad_terms = ["electronic", "experimental", "electronica"]
+exclude_terms = ["dark ambient", "harsh noise", "power electronics"]
+
+[[scene]]
+id = "house-techno"
+name = "House and techno (the parts that lead toward the core)"
+tier = "wider"
+years = [1985, 2010]
+share = 2
+terms = ["deep house", "acid house", "chicago house", "detroit techno", "microhouse",
+         "dub techno", "minimal techno"]
+broad_terms = ["house", "techno", "electronic"]
+exclude_terms = ["trance", "hardstyle", "eurodance", "hard techno", "gabber", "psytrance"]
+
+# ---------------------------------------------------------------- paths
+# Adjacent scenes on a path are "neighbors": an album matching both is a
+# connector. Paths also name what later tag normalization and evaluation follow.
+
+[[path]]
+name = "soul to 1990s rap"
+scenes = ["soul", "funk-early-disco", "early-hip-hop", "nineties-rap"]
+
+[[path]]
+name = "post-punk and shoegaze through 2000s indie into dream pop and the center"
+scenes = ["post-punk-shoegaze", "dream-noise-pop", "motorik-indietronica"]
+
+[[path]]
+name = "kosmische to indietronica to the later echoes"
+scenes = ["kosmische-motorik", "motorik-indietronica", "later-echoes"]
+
+[[path]]
+name = "Brazil to lounge pop"
+scenes = ["brazil-bossa-tropicalia", "fusion-brazilian-jazz", "space-age-lounge-chamber"]
+
+[[path]]
+name = "jazz to funk"
+scenes = ["hard-bop-modal-spiritual", "fusion-brazilian-jazz", "funk-early-disco"]
+
+[[path]]
+name = "sample-heavy rap to trip hop to sample-based pop"
+scenes = ["nineties-rap", "ambient-trip-hop-idm", "sample-psych-pop"]
+
+[[path]]
+name = "yé-yé to lounge pop to Shibuya-kei"
+scenes = ["french-pop-yeye", "space-age-lounge-chamber", "japanese-indie-pop"]
+
+[[path]]
+name = "1960s psych pop to sample psych to the center"
+scenes = ["psych-sunshine-pop", "sample-psych-pop", "motorik-indietronica"]
+
+[[path]]
+name = "library music to hauntology"
+scenes = ["early-electronic-library", "later-echoes"]
+
+[[path]]
+name = "house and ambient into downtempo pop"
+scenes = ["house-techno", "ambient-trip-hop-idm", "art-pop-downtempo"]
+
+[[path]]
+name = "dream pop to art pop"
+scenes = ["dream-noise-pop", "art-pop-downtempo", "space-age-lounge-chamber"]

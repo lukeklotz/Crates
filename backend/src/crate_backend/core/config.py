@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     musicbrainz_dump_dir: str = str(_REPO_ROOT / "MusicBrainz")
     musicbrainz_target_catalog_size: int = 25000
 
+    # Scene-based catalog expansion: catalog/ holds scenes.toml, the batch
+    # files and the profile and coverage reports. The scene pool is every
+    # eligible release group from the dump, written by
+    # scripts/profile_catalog_pool.py; it is large, so it lives (gitignored)
+    # next to the dumps.
+    catalog_dir: str = str(_REPO_ROOT / "catalog")
+    scene_pool_path: str = str(_REPO_ROOT / "MusicBrainz" / "scene-pool.jsonl.gz")
+
     # Last.fm popularity signal (Phase 3). Free key from
     # https://www.last.fm/api/account/create; the form's homepage/callback
     # URLs are unused by the read-only endpoints called here.
