@@ -48,14 +48,14 @@ class BatchResult:
     shortfalls: dict[str, int] = field(default_factory=dict)
 
 
-def is_deep_cut(album: PoolAlbum, settings: SelectionSettings) -> bool:
+def is_deep_cut(album: PoolAlbum | CatalogAlbum, settings: SelectionSettings) -> bool:
     """Less famous but well described: few votes in total, several
     descriptive terms, and at least two of them scene terms. Tag votes stand
     in for fame because albums outside the catalog have no Last.fm data."""
     return (
         album.match is not None
-        and album.total_votes <= settings.deep_cut_max_votes
-        and album.n_terms >= settings.deep_cut_min_terms
+        and sum(album.terms.values()) <= settings.deep_cut_max_votes
+        and len(album.terms) >= settings.deep_cut_min_terms
         and len(album.match.matched_terms) >= settings.deep_cut_min_scene_terms
     )
 
