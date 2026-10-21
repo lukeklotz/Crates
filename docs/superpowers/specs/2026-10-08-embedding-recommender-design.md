@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Phase 5 of `docs/crate-ml-engineering-project-plan.md` asks Crate to "learn similarities in meaning rather than requiring exact shared words." TF-IDF (Phase 4) treats "melancholic" and "sorrowful" as unrelated words. A pretrained sentence-embedding model places them close together.
+Phase 5 of `crate-ml-engineering-project-plan.md` asks Crate to "learn similarities in meaning rather than requiring exact shared words." TF-IDF (Phase 4) treats "melancholic" and "sorrowful" as unrelated words. A pretrained sentence-embedding model places them close together.
 
 This spec is **Phase 5a**: embed the *same* album documents TF-IDF uses (genre/tag terms + cleaned Wikipedia text), serve the result as a third approach, and measure it on the Phase 4 answer key. Same data, classical vs. neural representation, so the comparison is clean.
 

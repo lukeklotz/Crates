@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Phase 2 of the Crate project plan (`docs/crate-ml-engineering-project-plan.md`) needs a reproducible pipeline that turns MusicBrainz data into Crate's normalized album catalog. This replaces the small hand-written seed catalog (141 albums, `backend/src/crate_backend/scripts/seed_catalog.py`) built during Phase 1, which only has title/artist/year and no genre/tag/credit data. Phase 3 (non-ML baselines: genre-overlap, tag-overlap, graph features from shared musicians/producers/labels/instruments/artist relationships) and Phase 4 (TF-IDF text documents from genres/tags/credits/instruments/labels/text) both depend on this richer metadata existing.
+Phase 2 of the Crate project plan (`crate-ml-engineering-project-plan.md`) needs a reproducible pipeline that turns MusicBrainz data into Crate's normalized album catalog. This replaces the small hand-written seed catalog (141 albums, `backend/src/crate_backend/scripts/seed_catalog.py`) built during Phase 1, which only has title/artist/year and no genre/tag/credit data. Phase 3 (non-ML baselines: genre-overlap, tag-overlap, graph features from shared musicians/producers/labels/instruments/artist relationships) and Phase 4 (TF-IDF text documents from genres/tags/credits/instruments/labels/text) both depend on this richer metadata existing.
 
 ## Decisions made
 
@@ -55,6 +55,6 @@ Each stage is a separate function. The dump stages (about 10–15 minutes) write
 7. **Label linkage:** confirmed unresolved without `release` — `label.tar.xz` stays downloaded and validated (for whenever `release` is reconsidered) but is not read by the v1 ingestion script.
 
 ## Related files
-- `docs/crate-ml-engineering-project-plan.md` — the overall phased project plan this design implements Phase 2 of.
+- `crate-ml-engineering-project-plan.md` — the overall phased project plan this design implements Phase 2 of.
 - `backend/src/crate_backend/models/catalog.py` — existing `Album`/`Artist` models to be extended.
 - `backend/src/crate_backend/scripts/seed_catalog.py` — the Phase 1 seed script this pipeline supersedes.

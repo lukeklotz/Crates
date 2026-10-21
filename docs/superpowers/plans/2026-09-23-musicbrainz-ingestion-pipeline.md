@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace Crate's 141-album hand-written seed catalog with a MusicBrainz-derived catalog (genres, tags, artist identity, artist-to-artist relationships, cover art), implementing Phase 2 of `docs/crate-ml-engineering-project-plan.md`.
+**Goal:** Replace Crate's 141-album hand-written seed catalog with a MusicBrainz-derived catalog (genres, tags, artist identity, artist-to-artist relationships, cover art), implementing Phase 2 of `crate-ml-engineering-project-plan.md`.
 
 **Architecture:** A two-stage streaming pipeline reads `release-group.tar.xz` (filter + rank to a target-sized candidate set) and `artist.tar.xz` (resolve an artist-to-artist relationship graph for credited artists), writes both into new Genre/Tag/ArtistRelationship tables via idempotent upserts, then a separate, resumable, rate-limited pass checks the Cover Art Archive. A thin CLI script orchestrates the stages, mirroring the existing `scripts/seed_catalog.py` pattern.
 
@@ -1753,7 +1753,7 @@ git commit -m "Add MusicBrainz ingestion CLI script"
 
 Not automated code: this runs Task 7's script once, by hand, against the real multi-GB archives.
 
-**Files:** `docs/crate-ml-engineering-project-plan.md` (status note only)
+**Files:** `crate-ml-engineering-project-plan.md` (status note only)
 
 - [ ] **Step 1: Confirm the archives are in place**
 
@@ -1821,12 +1821,12 @@ Expected: `Removed 141 seed albums.` If it reports references instead, stop and 
 
 - [ ] **Step 6: Record Phase 2 completion**
 
-In `docs/crate-ml-engineering-project-plan.md` (the tracked copy under `docs/`, not the untracked one at the repo root), add under Phase 2's `### Completion criterion`: `**Status:** Complete as of <date> — <N> albums ingested from the 2026-09-23 MusicBrainz snapshot.`
+In `crate-ml-engineering-project-plan.md` (the tracked copy under `docs/`, not the untracked one at the repo root), add under Phase 2's `### Completion criterion`: `**Status:** Complete as of <date> — <N> albums ingested from the 2026-09-23 MusicBrainz snapshot.`
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add docs/crate-ml-engineering-project-plan.md
+git add crate-ml-engineering-project-plan.md
 git commit -m "Mark Phase 2 (MusicBrainz ingestion) complete"
 ```
 

@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Phase 3 of the Crate project plan (`docs/crate-ml-engineering-project-plan.md`) requires a validated album-level popularity signal before the popularity baseline and the lesser-known/moderate/widely-popular controls can be implemented. `Album.popularity` exists as a column but has never been populated — no source has been selected. This spec picks Last.fm as that source, matched against MusicBrainz-identified albums by artist name + album title (Last.fm's own MBID tagging is too sparse to use as the primary lookup key), and adds a second, independent internal signal — an in-app "added to sandbox" counter — that is tracked from now on but not yet used in ranking.
+Phase 3 of the Crate project plan (`crate-ml-engineering-project-plan.md`) requires a validated album-level popularity signal before the popularity baseline and the lesser-known/moderate/widely-popular controls can be implemented. `Album.popularity` exists as a column but has never been populated — no source has been selected. This spec picks Last.fm as that source, matched against MusicBrainz-identified albums by artist name + album title (Last.fm's own MBID tagging is too sparse to use as the primary lookup key), and adds a second, independent internal signal — an in-app "added to sandbox" counter — that is tracked from now on but not yet used in ranking.
 
 ## Decisions made
 
@@ -97,7 +97,7 @@ class PopularitySignal(UUIDPkMixin, TimestampMixin, Base):
 
 ## Related files
 
-- `docs/crate-ml-engineering-project-plan.md` — Phase 3, steps 1 and 10, which this spec implements the popularity-signal prerequisite for.
+- `crate-ml-engineering-project-plan.md` — Phase 3, steps 1 and 10, which this spec implements the popularity-signal prerequisite for.
 - `docs/superpowers/specs/2026-09-20-musicbrainz-ingestion-design.md` — the ingestion pipeline this design's client/matching/ingest split follows the shape of.
 - `backend/src/crate_backend/musicbrainz/cover_art.py` — rate-limited client pattern reused for the Last.fm client.
 - `backend/src/crate_backend/musicbrainz/ingest.py` — idempotent upsert pattern reused for `PopularitySignal`.

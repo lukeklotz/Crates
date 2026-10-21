@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Phase 3 of `docs/crate-ml-engineering-project-plan.md` calls for non-ML recommendation baselines that later models must beat. This project deliberately runs a **thin** Phase 3: one simple, explainable baseline, then straight on to Phase 4 (TF-IDF). The goal of this slice is that a user can put albums in a group, press **Find recommendations**, and see related albums with the reason each was suggested — the first time Crate shows real recommendations.
+Phase 3 of `crate-ml-engineering-project-plan.md` calls for non-ML recommendation baselines that later models must beat. This project deliberately runs a **thin** Phase 3: one simple, explainable baseline, then straight on to Phase 4 (TF-IDF). The goal of this slice is that a user can put albums in a group, press **Find recommendations**, and see related albums with the reason each was suggested — the first time Crate shows real recommendations.
 
 ## Scope
 
@@ -122,7 +122,7 @@ Frontend (no test framework exists; adding one is out of scope): `oxlint`, a Typ
 
 ## Related files
 
-- `docs/crate-ml-engineering-project-plan.md` — Phase 3 (thin version of steps 2, 5 and 7).
+- `crate-ml-engineering-project-plan.md` — Phase 3 (thin version of steps 2, 5 and 7).
 - `backend/src/crate_backend/models/catalog.py` — `Album`, `Genre`, `Tag`, `AlbumGenre`, `AlbumTag`.
 - `backend/src/crate_backend/api/routes/albums.py` — existing search route (response-shape conventions).
 - `frontend/app/page.tsx` — canvas, groups, and the group panel.

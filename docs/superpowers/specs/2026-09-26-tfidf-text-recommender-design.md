@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Phase 4 of `docs/crate-ml-engineering-project-plan.md` introduces classical information retrieval: represent each album as a TF-IDF vector and recommend by cosine similarity. It must beat the Phase 3 Jaccard genre/tag-overlap baseline, and it must be *measured* doing so.
+Phase 4 of `crate-ml-engineering-project-plan.md` introduces classical information retrieval: represent each album as a TF-IDF vector and recommend by cosine similarity. It must beat the Phase 3 Jaccard genre/tag-overlap baseline, and it must be *measured* doing so.
 
 The plan's Phase 4 assumes album documents built from credits, labels and annotations. Phase 2 did not deliver those, so without new data an album's document would be only its tag list. This phase therefore adds **English Wikipedia article text** as a second source of descriptive words.
 
@@ -318,7 +318,7 @@ About 25 seeds × 20–25 unique candidates ≈ 500–600 grades, about 1.5–2 
 
 ## Related files
 
-- `docs/crate-ml-engineering-project-plan.md`: Phase 4 (steps 1–5, 8, 9, 10; steps 6–7 deferred as above).
+- `crate-ml-engineering-project-plan.md`: Phase 4 (steps 1–5, 8, 9, 10; steps 6–7 deferred as above).
 - `docs/superpowers/specs/2026-09-24-overlap-baseline-recommender-design.md`: the baseline this must beat.
 - `backend/src/crate_backend/recommend/overlap.py`, `api/routes/recommendations.py`: existing recommender and endpoint.
 - `backend/src/crate_backend/lastfm/client.py`, `scripts/backfill_lastfm_popularity.py`: fetcher pattern to mirror.
