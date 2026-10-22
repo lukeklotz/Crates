@@ -1,3 +1,5 @@
+> **Status:** Crates is under active development. A fully deployed version will be available soon.
+
 # Crates
 
 
@@ -31,4 +33,3 @@ Each album gets two vectors, one for tags and one for text. Similarity between t
 
 See `crate-ml-engineering-project-plan.md` for the full project plan.
 
-> **Status:** Crates is under active development. A fully deployed version will be available soon.
